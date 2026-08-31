@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "mcq-generator": {
+      "description": "Question-generation engine for the MCQ quiz app. Given a JSON session input (technologies, difficulty, jobTitle, questionsPerTech, areasByTechnology, existingQuestions), emits strictly a JSON array of interview MCQs in rapid-grill style (single-select 4 options + multi-select 'Select ALL that apply'), never repeating previously used questions.",
+      "mode": "primary",
+      "model": "opencode/big-pickle",
+      "prompt": "{file:.opencode/prompts/mcq-generator.txt}",
+      "permission": {
+        "read": "deny",
+        "write": "deny",
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "grep": "deny",
+        "glob": "deny"
+      }
+    }
+  }
+}

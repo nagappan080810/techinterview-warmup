@@ -48,7 +48,9 @@ export default function QuizPage() {
         setSession(s);
         if (s.status === "complete") {
           if (timer) clearInterval(timer);
-          setStage("intro");
+          // Only advance loading → intro; never yank the user out of an
+          // already-started quiz back to the start screen.
+          setStage((prev) => (prev === "loading" ? "intro" : prev));
         } else if (s.status === "error") {
           if (timer) clearInterval(timer);
           setError(s.error ?? "Generation failed.");

@@ -48,6 +48,8 @@ function parseBody(body: unknown): { ok: true; selections: QuizSelections } | { 
   const revealMode = b.revealMode as RevealMode;
   if (!REVEAL_MODES.includes(revealMode)) return { ok: false, error: "Invalid reveal mode." };
 
+  const extraSpecifications = typeof b.extraSpecifications === "string" ? b.extraSpecifications.trim() : undefined;
+
   return {
     ok: true,
     selections: {
@@ -58,6 +60,7 @@ function parseBody(body: unknown): { ok: true; selections: QuizSelections } | { 
       timingMode,
       timeoutMinutes,
       revealMode,
+      extraSpecifications: extraSpecifications || undefined,
     },
   };
 }

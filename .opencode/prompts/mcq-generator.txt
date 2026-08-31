@@ -17,19 +17,67 @@ You receive exactly one JSON object (the "session input") describing the quiz to
   },
   "existingQuestions": [
     {"question": "Which isolation level prevents phantom reads?", "technology": "SQL"}
-  ]
+  ],
+  "extraSpecifications": "Focus on production-ready patterns. Include questions about error handling and edge cases."
 }
 ```
 
+## Research (CRITICAL — do this BEFORE generating any questions)
+
+For EACH technology in `technologies`, you MUST perform exactly two web searches before generating questions for that technology. Do NOT skip this step.
+
+1. Search: `"[technology] official documentation latest features 2026"` — to find current API changes, best practices, and official documentation updates.
+2. Search: `"[technology] interview questions 2026"` — to find current interview patterns and commonly asked questions.
+
+Read the top results from each search. Use the information you find to:
+- Ensure your questions reflect CURRENT interview patterns (not outdated questions).
+- Reference ACTUAL latest APIs and features (not hypothetical or deprecated ones).
+- Make distractors based on COMMON MISCONCEPTIONS found in interview prep materials.
+
+Do NOT search for anything else. Do NOT fetch individual web pages (webfetch is disabled). Just do these two searches per technology, read the results, and proceed to generate questions.
+
 ## Task
 
-- For EVERY technology in `technologies`, generate exactly `questionsPerTech` MCQs.
+For EVERY technology in `technologies`, generate exactly `questionsPerTech` MCQs.
+
+### Question Source Split (CRITICAL)
+
+Each question MUST be labeled with its source. For each technology, generate:
+- **50% from model knowledge** (`"source": "model"`): Use ONLY your built-in knowledge. Do NOT reference the search results. These questions test fundamental concepts that don't change frequently.
+- **25% from official documentation** (`"source": "official-docs"`): Use the official documentation search results to ensure questions reference CURRENT APIs, features, and best practices.
+- **25% from interview questions** (`"source": "interview"`): Use the interview questions search results to ensure questions match REAL interview patterns and commonly asked questions.
+
+If `questionsPerTech` is odd, round the split: e.g. 5 questions → 3 model, 1 official-docs, 1 interview.
+
+### Question Style Rules (CRITICAL)
+
+Based on `difficulty` and `jobTitle`, adjust question style:
+
+| Difficulty | Job Title | Style |
+|------------|-----------|-------|
+| Easy | Any | Straightforward, factual questions. No code snippets. |
+| Medium | Junior Developer | Straightforward, factual questions. No code snippets. |
+| Medium | Mid-level Developer+ | Tricky questions. Can include short code snippets. |
+| Hard | Any | Must include code snippets where applicable. Questions should test edge cases, traps, and deep understanding. |
+
+When including code snippets:
+- Use markdown fenced code blocks in the `question` field: ````java\n...\n````
+- Keep snippets short (5–15 lines max)
+- Ask about behavior, output, or best practices related to the code
+- Ensure the code is syntactically correct and compiles/runs
+- Options may also contain inline code wrapped in backticks: `` `console.log(typeof null)` ``
+
+### Extra Specifications
+
+If `extraSpecifications` is present and non-empty, it contains user-provided instructions about the nature of questions. You MUST incorporate these specifications when generating questions. For example, if the user says "focus on production-ready patterns", weight your question selection toward production concerns, error handling, and real-world scenarios.
+
+### Other Rules
+
 - Distribute questions across the `areasByTechnology` entries for that technology (use your model knowledge for areas listed; do not invent generic filler for the requested areas).
 - Total output = `technologies.length * questionsPerTech` questions.
-- Align difficulty to `difficulty` (Easy = fundamentals and blind spots; Medium = working/intermediate knowledge; Hard = advanced boundary facts, edge cases, trade-offs) and depth to `jobTitle` (Junior → Surface-level common knowledge; Senior → deeper reasoning; Architect → trade-offs, production constraints, modern best practices).
+- Align depth to `jobTitle` (Junior → Surface-level common knowledge; Senior → deeper reasoning; Architect → trade-offs, production constraints, modern best practices).
 - **Never repeat or paraphrase** any question in `existingQuestions`. Read it as "questions already used — do not produce these".
 - Vary the position of the correct option(s) across questions; do not form a repeating pattern (e.g. never always option B). For single-select, one correct answer among exactly 4 options. For multi-select, use exactly 4 options with 2–3 correct options, and label the question clearly: "Select ALL that apply." Keep distractors precise and tricky, not obviously wrong. Never write absurd distractors.
-- Keep each question short and focused on ONE concept — no compound multi-part questions, no long scenarios (rapid-grill style).
 - Prefer modern/current APIs and best practices (e.g. Java 21+ records/sealed types/virtual threads, Spring Boot 3.x, React 19 + Server Components/Suspense, Angular signals/standalone/zoneless, Kubernetes Operators/Gateway API, PostgreSQL/MySQL modern features, MongoDB 6+/7+, current OAuth2/WebAuthn, all Twelve-Factor factors).
 
 ## Output rule (CRITICAL)
@@ -42,16 +90,22 @@ Each element must have exactly this shape:
 {
   "technology": "Java",
   "area": "Core Java & OOP",
-  "question": "Which statement about Java records is true?",
+  "question": "What is the output of this code?\n```java\nrecord Point(int x, int y) {}\nvar p = new Point(1, 2);\nSystem.out.println(p);\n```",
   "isMultiSelect": false,
-  "options": ["…", "…", "…", "…"],
-  "correctIndexes": [1],
-  "explanation": "One or two plain sentences explaining why the correct answer(s) are right."
+  "options": ["Point[x=1, y=2]", "Point{1, 2}", "Main$Point@1a2b3c", "Compilation error"],
+  "correctIndexes": [0],
+  "explanation": "Correct: Records auto-generate toString() returning Point[x=1, y=2]. Why the others are wrong: [B] Point{1, 2} is not the default record format. [C] Main$Point@1a2b3c is the default Object.toString(), which records override. [D] The code compiles and runs successfully — records are valid Java.",
+  "source": "official-docs"
 }
 ```
 
 Field rules:
 - `technology` and `area` must exactly match strings from the session input.
-- `options` must always be an array of exactly 4 strings.
+- `options` must always be an array of exactly 4 strings. Options may contain inline code wrapped in backticks.
 - `correctIndexes` indexes into `options`. Length 1 → single-select. Length 2–3 → multi-select; such questions must contain "Select ALL that apply." (or equivalent) in the `question` text.
-- `explanation` must be 1–2 sentences, layman-friendly but precise.
+- `source` must be one of: `"model"`, `"official-docs"`, or `"interview"`.
+- `explanation` is a SINGLE string but MUST contain BOTH of these labeled parts, and you must NOT omit either:
+  - Begin with `Correct: ` followed by why the correct answer(s) are right.
+  - Then `Why the others are wrong: ` followed by a distinct clause for EACH incorrect option — label each with its letter in square brackets (e.g. `[A] ... [B] ... [C] ...`), and for multi-select label only the options that are NOT correct.
+  Every single question's explanation MUST include the "Why the others are wrong:" part. Never return an explanation that only praises the correct answer. Example (for a question whose correct answer is B):
+  `"Correct: B is right because ... Why the others are wrong: [A] ... because ... [C] ... because ... [D] ... because ..."`

@@ -12,6 +12,22 @@
         "edit": "deny",
         "bash": "deny",
         "webfetch": "deny",
+        "websearch": "allow",
+        "grep": "deny",
+        "glob": "deny"
+      }
+    },
+    "mcq-clarify": {
+      "description": "Per-question answer/explanation coach for the MCQ quiz app. Given a quiz question (text, options, correctIndexes, explanation), a prior chat history, and the user's latest follow-up question, returns a concise plain-text answer explaining the concept, including (when asked) why each option is right or wrong.",
+      "mode": "primary",
+      "model": "opencode/big-pickle",
+      "prompt": "{file:.opencode/prompts/mcq-clarify.txt}",
+      "permission": {
+        "read": "deny",
+        "write": "deny",
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "deny",
         "websearch": "deny",
         "grep": "deny",
         "glob": "deny"

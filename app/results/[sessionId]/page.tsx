@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { GenerationQuestion, QuizSession } from "@/lib/types";
+import SessionBadge from "@/app/components/SessionBadge";
 
 const OPTION_LABELS = ["A", "B", "C", "D"];
 
@@ -83,9 +84,12 @@ export default function ResultsPage() {
     <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 px-6 py-12">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Results</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-semibold tracking-tight">Results</h1>
+            <SessionBadge sessionId={sessionId} />
+          </div>
           <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-            {s.difficulty} · {s.jobTitle} · session {sessionId}
+            {s.difficulty} · {s.jobTitle}
           </p>
         </div>
         <div className="rounded-2xl border border-zinc-200 px-5 py-3 text-center dark:border-zinc-800">

@@ -2,11 +2,15 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GenerationQuestion, QuizSession } from "@/lib/types";
+import type { GenerationQuestion, QuizSession, ChatMessage } from "@/lib/types";
+import SessionBadge from "@/app/components/SessionBadge";
+import QuestionText from "@/app/components/QuestionText";
 
 type QuizStage = "loading" | "intro" | "question";
 
 const OPTION_LABELS = ["A", "B", "C", "D"];
+
+const ASK_TIMEOUT_MS = 105_000;
 
 export default function QuizPage() {
   const params = useParams<{ sessionId: string }>();
@@ -22,6 +26,18 @@ export default function QuizPage() {
   const [now, setNow] = useState(0);
   const [quizStart, setQuizStart] = useState<number | null>(null);
   const [sectionStart, setSectionStart] = useState<number | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [optimistic, setOptimistic] = useState<ChatMessage | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Displayed thread = persisted messages for the current question + the
+  // in-flight (optimistic) message while the assistant is replying.
+  const chatThread = useMemo<ChatMessage[]>(() => {
+    const base = session?.chats?.[index] ?? [];
+    return optimistic ? [...base, optimistic] : base;
+  }, [session?.chats, index, optimistic]);
 
   const questions = useMemo<GenerationQuestion[]>(() => session?.questions ?? [], [session?.questions]);
   const question = questions[index];
@@ -30,45 +46,134 @@ export default function QuizPage() {
   const timingMode = session?.selections.timingMode;
   const timeoutMinutes = session?.selections.timeoutMinutes;
 
-  // Poll until the agent finishes generating the question set.
+  // Stream generation progress via SSE instead of polling.
   useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let eventSource: EventSource | null = null;
 
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/sessions/${sessionId}`);
-        if (!res.ok) {
-          if (alive) setError("Could not load this quiz session.");
-          return;
-        }
-        const data = (await res.json()) as { session: QuizSession };
-        const s = data.session;
-        if (!alive) return;
-        setSession(s);
-        if (s.status === "complete") {
-          if (timer) clearInterval(timer);
-          // Only advance loading → intro; never yank the user out of an
-          // already-started quiz back to the start screen.
+    const connect = () => {
+      eventSource = new EventSource(`/api/sessions/${sessionId}/stream`);
+
+      eventSource.addEventListener("status", (e: MessageEvent) => {
+        const data = JSON.parse(e.data) as {
+          status: string;
+          eventCount: number;
+          questions?: GenerationQuestion[];
+          selections?: QuizSession["selections"];
+          answers?: QuizSession["answers"];
+          chats?: QuizSession["chats"];
+          error?: string;
+        };
+        setSession((prev) => {
+          const base: QuizSession = prev ?? {
+            id: sessionId,
+            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+            status: "generating",
+            createdAt: new Date().toISOString(),
+            eventCount: 0,
+            answers: {},
+          };
+          return {
+            ...base,
+            status: data.status as QuizSession["status"],
+            eventCount: data.eventCount,
+            questions: data.questions ?? base.questions,
+            selections: data.selections ?? base.selections,
+            answers: data.answers ?? base.answers,
+            chats: data.chats ?? base.chats,
+            error: data.error ?? base.error,
+          };
+        });
+        if (data.status === "complete") {
           setStage((prev) => (prev === "loading" ? "intro" : prev));
-        } else if (s.status === "error") {
-          if (timer) clearInterval(timer);
-          setError(s.error ?? "Generation failed.");
+        } else if (data.status === "error") {
+          setError(data.error ?? "Generation failed.");
         }
-      } catch {
-        // transient — keep polling
-      }
+      });
+
+      eventSource.addEventListener("progress", (e: MessageEvent) => {
+        const data = JSON.parse(e.data) as { eventCount: number; lastEventAt?: string };
+        setSession((prev) => {
+          if (!prev) return prev;
+          return { ...prev, eventCount: data.eventCount, lastEventAt: data.lastEventAt };
+        });
+      });
+
+      eventSource.addEventListener("complete", (e: MessageEvent) => {
+        const data = JSON.parse(e.data) as {
+          status: string;
+          questions: GenerationQuestion[];
+          selections?: QuizSession["selections"];
+          answers?: QuizSession["answers"];
+          chats?: QuizSession["chats"];
+          eventCount: number;
+        };
+        setSession((prev) => {
+          const base: QuizSession = prev ?? {
+            id: sessionId,
+            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+            status: "complete",
+            createdAt: new Date().toISOString(),
+            eventCount: 0,
+            answers: {},
+          };
+          return {
+            ...base,
+            status: "complete",
+            questions: data.questions,
+            selections: data.selections ?? base.selections,
+            answers: data.answers ?? base.answers,
+            chats: data.chats ?? base.chats,
+            eventCount: data.eventCount,
+            completedAt: new Date().toISOString(),
+          };
+        });
+        setStage((prev) => (prev === "loading" ? "intro" : prev));
+      });
+
+      eventSource.addEventListener("error", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as { error: string };
+          setError(data.error ?? "Generation failed.");
+        } catch {
+          // SSE connection error (not a data error)
+        }
+      });
+
+      eventSource.addEventListener("done", () => {
+        eventSource?.close();
+        eventSource = null;
+      });
+
+      eventSource.onerror = () => {
+        // Connection lost — fallback to a single poll, then reconnect
+        eventSource?.close();
+        eventSource = null;
+        void fetch(`/api/sessions/${sessionId}`)
+          .then((r) => r.json())
+          .then((d) => {
+            const s = (d as { session: QuizSession }).session;
+            setSession(s);
+            if (s.status === "complete") {
+              setStage((prev) => (prev === "loading" ? "intro" : prev));
+            } else if (s.status === "error") {
+              setError(s.error ?? "Generation failed.");
+            } else if (s.status === "generating") {
+              // Reconnect after a brief delay
+              setTimeout(connect, 2000);
+            }
+          })
+          .catch(() => {
+            setTimeout(connect, 2000);
+          });
+      };
     };
 
-    void poll();
-    if (stage !== "intro") {
-      timer = setInterval(() => void poll(), 2000);
-    }
+    connect();
+
     return () => {
-      alive = false;
-      if (timer) clearInterval(timer);
+      eventSource?.close();
     };
-  }, [sessionId, stage]);
+  }, [sessionId]);
 
   const timerActive = timingMode !== "none" && stage === "question" && question !== undefined;
 
@@ -119,6 +224,9 @@ export default function QuizPage() {
     setIndex(0);
     setSelected([]);
     setRevealed(false);
+    setChatOpen(false);
+    setChatInput("");
+    setOptimistic(null);
     setStage("question");
     if (session && Object.keys(session.answers).length > 0) {
       try {
@@ -158,6 +266,63 @@ export default function QuizPage() {
     setRevealed(true);
   };
 
+  const askQuestion = async (preset?: string) => {
+    if (!question || chatLoading) return;
+    const message = (preset ?? chatInput).trim();
+    if (!message) return;
+    const userMsg: ChatMessage = { role: "user", content: message, createdAt: new Date().toISOString() };
+    setChatInput("");
+    setChatLoading(true);
+    setOptimistic(userMsg);
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), ASK_TIMEOUT_MS);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionIndex: index, message }),
+        signal: controller.signal,
+      });
+      const data = (await res.json()) as { ok?: boolean; thread?: ChatMessage[]; error?: string };
+      const assistant: ChatMessage =
+        res.ok && data.thread
+          ? data.thread[data.thread.length - 1]
+          : { role: "assistant", content: `⚠️ ${data.error ?? "Something went wrong."}`, createdAt: new Date().toISOString() };
+      setSession((prev) => (prev ? { ...prev, chats: { ...(prev.chats ?? {}), [index]: [...(prev.chats?.[index] ?? []), userMsg, assistant] } } : prev));
+    } catch (err) {
+      const timedOut = err instanceof DOMException && err.name === "AbortError";
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              chats: {
+                ...(prev.chats ?? {}),
+                [index]: [
+                  ...(prev.chats?.[index] ?? []),
+                  userMsg,
+                  {
+                    role: "assistant",
+                    content: timedOut
+                      ? "⚠️ The assistant took too long to respond. Please try your question again."
+                      : "⚠️ Could not reach the assistant.",
+                    createdAt: new Date().toISOString(),
+                  },
+                ],
+              },
+            }
+          : prev,
+      );
+    } finally {
+      clearTimeout(abortTimer);
+      setOptimistic(null);
+      setChatLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatThread, chatOpen]);
+
   const next = () => {
     const nextIndex = index + 1;
     if (nextIndex < total) {
@@ -166,11 +331,16 @@ export default function QuizPage() {
       }
       setSelected([]);
       setRevealed(false);
+      setChatOpen(false);
+      setChatInput("");
+      setOptimistic(null);
       setIndex(nextIndex);
       return;
     }
     router.push(`/results/${sessionId}`);
   };
+
+  const askPreset = (label: string) => () => void askQuestion(label);
 
   const timeLeft = Math.max(0, Math.ceil(remainingMs / 1000));
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -200,9 +370,12 @@ export default function QuizPage() {
     const s = session.selections;
     return (
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-start gap-8 px-6 py-16">
-        <button onClick={() => router.push("/")} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
-          ← New set
-        </button>
+        <div className="flex w-full items-center justify-between gap-3">
+          <button onClick={() => router.push("/")} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+            ← New set
+          </button>
+          <SessionBadge sessionId={sessionId} />
+        </div>
         <header>
           <h1 className="text-3xl font-semibold tracking-tight">Ready when you are</h1>
           <p className="mt-2 text-zinc-600 dark:text-zinc-400">
@@ -244,16 +417,19 @@ export default function QuizPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-12">
-      <div className="flex items-center justify-between gap-4 text-sm text-zinc-500 dark:text-zinc-400">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-sm text-zinc-500 dark:text-zinc-400">
         <span>
           Question {index + 1} of {total}
         </span>
-        <span className="font-mono text-xs">
-          {question.technology} · {question.area} · {question.isMultiSelect ? "multi" : "single"}
-        </span>
-        {timerActive && (
-          <span className={timeLeft <= 30 ? "font-mono font-semibold text-red-600 dark:text-red-400" : "font-mono"}>{formatTime(timeLeft)}</span>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-mono text-xs">
+            {question.technology} · {question.area} · {question.isMultiSelect ? "multi" : "single"}
+          </span>
+          {timerActive && (
+            <span className={timeLeft <= 30 ? "font-mono font-semibold text-red-600 dark:text-red-400" : "font-mono"}>{formatTime(timeLeft)}</span>
+          )}
+          <SessionBadge sessionId={sessionId} />
+        </div>
       </div>
 
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
@@ -261,12 +437,12 @@ export default function QuizPage() {
       </div>
 
       <section className="flex flex-col gap-6 rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
-        <h2 className="text-xl font-semibold leading-snug">
-          {question.question}
+        <div>
+          <QuestionText className="text-xl font-semibold leading-snug">{question.question}</QuestionText>
           {question.isMultiSelect && (
             <span className="ml-2 align-middle text-xs font-semibold uppercase tracking-wide text-zinc-400">Select ALL that apply</span>
           )}
-        </h2>
+        </div>
 
         <div className="flex flex-col gap-3">
           {question.options.map((opt, i) => {
@@ -277,7 +453,7 @@ export default function QuizPage() {
               if (correctOpt) stateClass = "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40";
               else if (chosen) stateClass = "border-red-500 bg-red-50 dark:bg-red-950/40";
             } else if (chosen) {
-              stateClass = "border-zinc-800 bg-zinc-100 dark:border-zinc-200 dark:bg-zinc-800";
+              stateClass = "border-amber-500 bg-amber-200 dark:border-amber-400 dark:bg-amber-900/60";
             }
             return (
               <button
@@ -287,10 +463,16 @@ export default function QuizPage() {
                 onClick={() => toggleOption(i)}
                 className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-colors ${stateClass}`}
               >
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-zinc-300 text-xs font-semibold dark:border-zinc-600">
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
+                    !revealed && chosen
+                      ? "border-amber-600 bg-amber-500 text-white dark:border-amber-500 dark:bg-amber-400 dark:text-zinc-900"
+                      : "border-zinc-300 dark:border-zinc-600"
+                  }`}
+                >
                   {OPTION_LABELS[i]}
                 </span>
-                <span className="min-w-0 flex-1">{opt}</span>
+                <span className="min-w-0 flex-1"><QuestionText>{opt}</QuestionText></span>
                 {revealed && correctOpt && <span className="text-emerald-600 dark:text-emerald-400">✓</span>}
                 {revealed && chosen && !correctOpt && <span className="text-red-600 dark:text-red-400">✗</span>}
               </button>
@@ -304,7 +486,7 @@ export default function QuizPage() {
               {answerIsCorrect ? "✅ Correct." : "❌ Incorrect."} Correct answer{question.correctIndexes.length > 1 ? "s" : ""}:{" "}
               {question.correctIndexes.map((c) => `${OPTION_LABELS[c]}) ${question.options[c]}`).join("  ·  ")}
             </p>
-            <p className="text-zinc-600 dark:text-zinc-400">{question.explanation}</p>
+            <QuestionText className="text-zinc-600 dark:text-zinc-400">{question.explanation}</QuestionText>
           </div>
         )}
 
@@ -333,6 +515,96 @@ export default function QuizPage() {
             >
               {index + 1 === total ? "See results →" : "Next →"}
             </button>
+          )}
+        </div>
+
+        <div className="mt-2 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <button
+            type="button"
+            onClick={() => setChatOpen((o) => !o)}
+            className="flex w-full items-center justify-between text-sm font-medium text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
+          >
+            <span>💬 Ask a question about this question</span>
+            <span className="text-xs text-zinc-400">{chatOpen ? "Hide ▲" : "Show ▼"}</span>
+          </button>
+
+          {chatOpen && (
+            <div className="mt-4 flex flex-col gap-3">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={askPreset("Why is each option wrong or right?")}
+                  disabled={chatLoading}
+                  className="rounded-full border border-zinc-200 px-3 py-1 text-xs text-zinc-600 transition-colors hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"
+                >
+                  Why is each option wrong/right?
+                </button>
+                <button
+                  type="button"
+                  onClick={askPreset("Explain this concept simply, with a short example.")}
+                  disabled={chatLoading}
+                  className="rounded-full border border-zinc-200 px-3 py-1 text-xs text-zinc-600 transition-colors hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"
+                >
+                  Explain simply
+                </button>
+              </div>
+
+              <div className="flex max-h-72 flex-col gap-3 overflow-y-auto rounded-xl bg-zinc-50 p-3 dark:bg-zinc-900/60">
+                {chatThread.length === 0 && (
+                  <p className="text-center text-xs text-zinc-400">Ask anything about this question — the assistant will help.</p>
+                )}
+                {chatThread.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${
+                        m.role === "user"
+                          ? "whitespace-pre-wrap bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                          : "border border-zinc-200 bg-white text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                      }`}
+                    >
+                      {m.role === "assistant" ? (
+                        <QuestionText>{m.content}</QuestionText>
+                      ) : (
+                        m.content
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="rounded-2xl border border-zinc-200 bg-white px-3.5 py-2 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
+                      …
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void askQuestion();
+                    }
+                  }}
+                  placeholder="Type your question…"
+                  disabled={chatLoading}
+                  className="min-w-0 flex-1 rounded-full border border-zinc-300 px-4 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+                />
+                <button
+                  type="button"
+                  onClick={() => void askQuestion()}
+                  disabled={chatLoading || chatInput.trim().length === 0}
+                  className="shrink-0 rounded-full bg-zinc-900 px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+                >
+                  Send
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </section>

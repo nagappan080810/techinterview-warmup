@@ -18,6 +18,7 @@ export async function createSession(selections: QuizSelections): Promise<QuizSes
     createdAt: new Date().toISOString(),
     eventCount: 0,
     answers: {},
+    chats: {},
   };
   await writeSession(session);
   return session;

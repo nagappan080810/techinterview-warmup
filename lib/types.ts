@@ -6,6 +6,8 @@ export type RevealMode = "immediate" | "end";
 
 export type TimingMode = "none" | "per-tech" | "global";
 
+export type QuestionSource = "model" | "official-docs" | "interview";
+
 export interface QuizSelections {
   technologies: string[];
   difficulty: Difficulty;
@@ -14,6 +16,7 @@ export interface QuizSelections {
   timingMode: TimingMode;
   timeoutMinutes: number;
   revealMode: RevealMode;
+  extraSpecifications?: string;
 }
 
 export interface GenerationQuestion {
@@ -24,6 +27,7 @@ export interface GenerationQuestion {
   options: string[];
   correctIndexes: number[];
   explanation: string;
+  source?: QuestionSource;
 }
 
 export interface BankedQuestion extends GenerationQuestion {
@@ -42,6 +46,12 @@ export interface QuestionAnswer {
   answeredAt?: string;
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+
 export type SessionStatus = "queued" | "generating" | "complete" | "error";
 
 export interface QuizSession {
@@ -56,6 +66,7 @@ export interface QuizSession {
   eventCount: number;
   questions?: GenerationQuestion[];
   answers: Record<number, QuestionAnswer>;
+  chats?: Record<number, ChatMessage[]>;
 }
 
 export interface QuestionStoreEntry {

@@ -108,11 +108,11 @@ async function runGeneration(job: GenerationJob, selections: QuizSelections): Pr
       return;
     }
 
-    const questions = enforcePerTechCount(result.questions, selections);
+    const questions = shuffleCorrectPositions(enforcePerTechCount(result.questions, selections));
     await appendToBank(questions, sessionId, selections);
     await patchSession(sessionId, {
       status: COMPLETE,
-      questions: result.questions,
+      questions,
       generatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
       error: undefined,
@@ -149,6 +149,7 @@ function buildPrompt(params: {
       questionsPerTech: selections.questionsPerTech,
       areasByTechnology,
       existingQuestions: existing,
+      extraSpecifications: selections.extraSpecifications,
     },
     null,
     2,
@@ -321,6 +322,30 @@ function enforcePerTechCount(questions: GenerationQuestion[], selections: QuizSe
   return out;
 }
 
+/** Fisher–Yates shuffle (in place, returns the same array). */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Randomly reposition the correct answer(s) on every question, guaranteeing the
+ * correct option is not always the same letter across a set regardless of what
+ * the model emitted. Options are permuted and `correctIndexes` are remapped to
+ * their new positions, so correctness/scoring is preserved.
+ */
+function shuffleCorrectPositions(questions: GenerationQuestion[]): GenerationQuestion[] {
+  return questions.map((q) => {
+    const order = shuffle([0, 1, 2, 3]);
+    const options = order.map((i) => q.options[i]);
+    const correctIndexes = q.correctIndexes.map((c) => order.indexOf(c)).sort((a, b) => a - b);
+    return { ...q, options, correctIndexes };
+  });
+}
+
 function parseQuestions(text: string): { ok: true; questions: GenerationQuestion[] } | { ok: false; error: string } {
   let parsed: unknown;
   try {
@@ -340,6 +365,7 @@ function parseQuestions(text: string): { ok: true; questions: GenerationQuestion
   const questions: GenerationQuestion[] = [];
   for (let i = 0; i < parsed.length; i++) {
     const raw = parsed[i] as Partial<GenerationQuestion>;
+    const source = raw.source === "model" || raw.source === "official-docs" || raw.source === "interview" ? raw.source : undefined;
     const q: GenerationQuestion = {
       technology: String(raw.technology ?? ""),
       area: String(raw.area ?? ""),
@@ -348,6 +374,7 @@ function parseQuestions(text: string): { ok: true; questions: GenerationQuestion
       options: Array.isArray(raw.options) && raw.options.length === 4 ? raw.options.map((o) => String(o)) : [],
       correctIndexes: Array.isArray(raw.correctIndexes) ? raw.correctIndexes.map((n) => Number(n)) : [],
       explanation: String(raw.explanation ?? ""),
+      source,
     };
     const valid =
       q.question.length > 0 &&

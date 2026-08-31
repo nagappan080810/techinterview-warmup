@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DIFFICULTIES, JOB_TITLES, TECHNOLOGIES } from "@/lib/technologies";
 import type { Difficulty, JobTitle, RevealMode, SessionStatus, TimingMode } from "@/lib/types";
+import SessionBadge from "@/app/components/SessionBadge";
 
 type Stage = "form" | "generating" | "error";
 
@@ -25,11 +26,11 @@ export default function WelcomePage() {
   const [timingMode, setTimingMode] = useState<TimingMode>("none");
   const [timeoutMinutes, setTimeoutMinutes] = useState(4);
   const [revealMode, setRevealMode] = useState<RevealMode>("immediate");
+  const [extraSpecifications, setExtraSpecifications] = useState("");
   const [stage, setStage] = useState<Stage>("form");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ eventCount: number; elapsed: number }>({ eventCount: 0, elapsed: 0 });
-  const [startedAt, setStartedAt] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const toggleTechnology = (id: string) => {
@@ -38,7 +39,12 @@ export default function WelcomePage() {
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
-      clearInterval(pollRef.current);
+      // Handle both setInterval and EventSource cleanup
+      if (typeof pollRef.current === "object" && "close" in pollRef.current) {
+        (pollRef.current as { close: () => void }).close();
+      } else {
+        clearInterval(pollRef.current);
+      }
       pollRef.current = null;
     }
   }, []);
@@ -52,7 +58,6 @@ export default function WelcomePage() {
     }
     setError(null);
     setStage("generating");
-    setStartedAt(null);
     setProgress({ eventCount: 0, elapsed: 0 });
 
     try {
@@ -67,6 +72,7 @@ export default function WelcomePage() {
           timingMode,
           timeoutMinutes,
           revealMode,
+          extraSpecifications: extraSpecifications.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -76,38 +82,68 @@ export default function WelcomePage() {
         return;
       }
       setSessionId(data.id);
-      pollGeneration(data.id);
+      startSSE(data.id);
     } catch {
       setStage("error");
       setError("Network error while starting generation.");
     }
   };
 
-  const pollGeneration = (id: string) => {
+  const startSSE = (id: string) => {
     stopPolling();
-    setStartedAt(Date.now());
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/sessions/${id}`);
-        const data = (await res.json()) as { session: SessionStatusPayload };
-        if (!res.ok) return;
-        const s = data.session;
-        const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
-        setProgress({ eventCount: s.eventCount ?? 0, elapsed });
+    const startTime = Date.now();
 
-        if (s.status === "complete") {
-          stopPolling();
-          setStage("form");
-          router.push(`/quiz/${id}`);
-        } else if (s.status === "error") {
-          stopPolling();
-          setStage("error");
-          setError(s.error ?? "Generation failed.");
-        }
+    const eventSource = new EventSource(`/api/sessions/${id}/stream`);
+
+    eventSource.addEventListener("progress", (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as { eventCount: number };
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      setProgress({ eventCount: data.eventCount, elapsed });
+    });
+
+    eventSource.addEventListener("complete", () => {
+      eventSource.close();
+      setStage("form");
+      router.push(`/quiz/${id}`);
+    });
+
+    eventSource.addEventListener("error", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as { error: string };
+        eventSource.close();
+        setStage("error");
+        setError(data.error ?? "Generation failed.");
       } catch {
-        // transient — keep polling
+        // SSE connection error
       }
-    }, 1500);
+    });
+
+    eventSource.addEventListener("done", () => {
+      eventSource.close();
+    });
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      // Fallback: poll once to check status
+      void fetch(`/api/sessions/${id}`)
+        .then((r) => r.json())
+        .then((d) => {
+          const s = (d as { session: SessionStatusPayload }).session;
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          setProgress({ eventCount: s.eventCount ?? 0, elapsed });
+          if (s.status === "complete") {
+            setStage("form");
+            router.push(`/quiz/${id}`);
+          } else if (s.status === "error") {
+            setStage("error");
+            setError(s.error ?? "Generation failed.");
+          }
+        })
+        .catch(() => {});
+    };
+
+    // Store for cleanup
+    pollRef.current = { close: () => eventSource.close() } as unknown as ReturnType<typeof setInterval>;
   };
 
   const reset = () => {
@@ -120,10 +156,10 @@ export default function WelcomePage() {
   const totalQuestions = technologies.length * questionsPerTech;
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-10 px-6 py-12">
-      <header>
+    <main className="mx-auto flex h-screen w-full max-w-6xl flex-col gap-5 overflow-hidden px-6 py-6">
+      <header className="shrink-0">
         <h1 className="text-3xl font-semibold tracking-tight">MCQ Interview Drill</h1>
-        <p className="mt-2 text-zinc-600 dark:text-zinc-400">
+        <p className="mt-1 text-zinc-600 dark:text-zinc-400">
           Pick your stack and settings. The generator agent creates a fresh, non-repeating question set just for you.
         </p>
       </header>
@@ -138,9 +174,13 @@ export default function WelcomePage() {
             {totalQuestions} questions across {technologies.length} technology
             {technologies.length > 1 ? "ies" : "y"} — this takes a few seconds.
           </p>
-          <p className="mt-2 font-mono text-xs text-zinc-500 dark:text-zinc-400">
-            session {sessionId ?? "…"} · {progress.eventCount} events · {progress.elapsed}s
-          </p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+            {sessionId ? <SessionBadge sessionId={sessionId} /> : <span>session …</span>}
+            <span>·</span>
+            <span>{progress.eventCount} events</span>
+            <span>·</span>
+            <span>{progress.elapsed}s</span>
+          </div>
           {stage === "error" && (
             <div className="mt-6">
               <p className="text-sm font-medium text-red-600 dark:text-red-400">{error}</p>
@@ -158,82 +198,85 @@ export default function WelcomePage() {
             e.preventDefault();
             void startGeneration();
           }}
-          className="flex flex-col gap-9"
+          className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-hidden lg:grid-cols-2"
         >
-          <fieldset>
-            <legend className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">Technologies — select one or more</legend>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {TECHNOLOGIES.map((tech) => {
-                const selected = technologies.includes(tech.id);
-                const open = expanded === tech.id;
-                return (
-                  <div
-                    key={tech.id}
-                    className={`rounded-2xl border p-4 transition-colors ${
-                      selected
-                        ? "border-zinc-800 bg-zinc-100 dark:border-zinc-200 dark:bg-zinc-800"
-                        : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+          <div className="min-h-0 overflow-y-auto rounded-2xl border border-zinc-200 p-4 pr-3 dark:border-zinc-800">
+            <fieldset>
+              <legend className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">Technologies — select one or more</legend>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {TECHNOLOGIES.map((tech) => {
+                  const selected = technologies.includes(tech.id);
+                  const open = expanded === tech.id;
+                  return (
+                    <div
+                      key={tech.id}
+                      className={`rounded-2xl border p-4 transition-colors ${
+                        selected
+                          ? "border-zinc-800 bg-zinc-100 dark:border-zinc-200 dark:bg-zinc-800"
+                          : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleTechnology(tech.id)}
+                        className="flex w-full items-start gap-3 text-left"
+                      >
+                        <span className={`mt-0.5 text-xl ${selected ? "" : "opacity-40 grayscale"}`}>{tech.icon}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium">{tech.name}</span>
+                          <span className="mt-0.5 block text-sm text-zinc-500 dark:text-zinc-400">{tech.shortDescription}</span>
+                        </span>
+                        <span
+                          className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs ${
+                            selected ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-600"
+                          }`}
+                        >
+                          {selected ? "✓" : ""}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExpanded(open ? null : tech.id)}
+                        className="mt-2 text-xs font-medium text-zinc-400 underline-offset-2 hover:text-zinc-700 hover:underline dark:hover:text-zinc-200"
+                      >
+                        {open ? "Hide areas" : "Show areas covered"}
+                      </button>
+                      {open && (
+                        <ul className="mt-2 space-y-2 rounded-xl bg-white/60 p-3 text-sm dark:bg-black/30">
+                          {tech.areas.map((a) => (
+                            <li key={a.name}>
+                              <span className="font-medium">{a.name}</span>
+                              <span className="block text-xs text-zinc-500 dark:text-zinc-400">{a.description}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
+          </div>
+
+          <div className="flex min-h-0 flex-col gap-6 overflow-y-auto pr-2">
+            <fieldset>
+              <legend className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">Difficulty</legend>
+              <div className="flex flex-wrap gap-2">
+                {DIFFICULTIES.map((d) => (
+                  <label
+                    key={d}
+                    className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
+                      difficulty === d
+                        ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
+                        : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
                     }`}
                   >
-                    <button
-                      type="button"
-                      onClick={() => toggleTechnology(tech.id)}
-                      className="flex w-full items-start gap-3 text-left"
-                    >
-                      <span className={`mt-0.5 text-xl ${selected ? "" : "opacity-40 grayscale"}`}>{tech.icon}</span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{tech.name}</span>
-                        <span className="mt-0.5 block text-sm text-zinc-500 dark:text-zinc-400">{tech.shortDescription}</span>
-                      </span>
-                      <span
-                        className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs ${
-                          selected ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-600"
-                        }`}
-                      >
-                        {selected ? "✓" : ""}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExpanded(open ? null : tech.id)}
-                      className="mt-2 text-xs font-medium text-zinc-400 underline-offset-2 hover:text-zinc-700 hover:underline dark:hover:text-zinc-200"
-                    >
-                      {open ? "Hide areas" : "Show areas covered"}
-                    </button>
-                    {open && (
-                      <ul className="mt-2 space-y-2 rounded-xl bg-white/60 p-3 text-sm dark:bg-black/30">
-                        {tech.areas.map((a) => (
-                          <li key={a.name}>
-                            <span className="font-medium">{a.name}</span>
-                            <span className="block text-xs text-zinc-500 dark:text-zinc-400">{a.description}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </fieldset>
-
-          <fieldset>
-            <legend className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">Difficulty</legend>
-            <div className="flex flex-wrap gap-2">
-              {DIFFICULTIES.map((d) => (
-                <label
-                  key={d}
-                  className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
-                    difficulty === d
-                      ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
-                      : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
-                  }`}
-                >
-                  <input type="radio" name="difficulty" value={d} checked={difficulty === d} onChange={() => setDifficulty(d)} className="sr-only" />
-                  {d}
-                </label>
-              ))}
-            </div>
-          </fieldset>
+                    <input type="radio" name="difficulty" value={d} checked={difficulty === d} onChange={() => setDifficulty(d)} className="sr-only" />
+                    {d}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
 
           <fieldset>
             <legend className="mb-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">Job Title</legend>
@@ -340,6 +383,22 @@ export default function WelcomePage() {
             </p>
           </fieldset>
 
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
+              Extra specifications <span className="text-zinc-400">(optional)</span>
+            </legend>
+            <textarea
+              value={extraSpecifications}
+              onChange={(e) => setExtraSpecifications(e.target.value)}
+              placeholder="e.g. Focus on production-ready patterns. Include questions about error handling, edge cases, and real-world scenarios."
+              rows={3}
+              className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+            <p className="mt-1 text-xs text-zinc-500">
+              Any additional instructions about the nature of questions you want.
+            </p>
+          </fieldset>
+
           {error && (
             <p className="text-sm font-medium text-red-600 dark:text-red-400">{error}</p>
           )}
@@ -351,6 +410,7 @@ export default function WelcomePage() {
           >
             Generate {totalQuestions} questions →
           </button>
+          </div>
         </form>
       )}
     </main>

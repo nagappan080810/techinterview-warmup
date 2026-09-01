@@ -156,7 +156,8 @@ export default function WelcomePage() {
   const totalQuestions = technologies.length * questionsPerTech;
 
   return (
-    <main className="mx-auto flex h-screen w-full max-w-6xl flex-col gap-5 overflow-hidden px-6 py-6">
+    <>
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 overflow-hidden px-6 py-6">
       <header className="shrink-0">
         <h1 className="text-3xl font-semibold tracking-tight">MCQ Interview Drill</h1>
         <p className="mt-1 text-zinc-600 dark:text-zinc-400">
@@ -414,5 +415,12 @@ export default function WelcomePage() {
         </form>
       )}
     </main>
+    <footer className="shrink-0 border-t border-zinc-200 py-4 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+      Any issues / suggestions — contact:{" "}
+      <a href="mailto:nagappan08@gmail.com" className="underline hover:text-zinc-800 dark:hover:text-zinc-200">
+        nagappan08@gmail.com
+      </a>
+    </footer>
+    </>
   );
 }

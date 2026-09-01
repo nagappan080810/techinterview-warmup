@@ -51,7 +51,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         const client = await getEmbeddedClient();
         let lastEventCount = session.eventCount;
 
-        const unsub = client.global
+        const unsub = client?.global
           .event({
             onSseEvent: () => {
               // Events are handled via polling the session file

@@ -75,10 +75,15 @@ export async function POST(request: Request) {
 
   const parsed = parseBody(body);
   if (!parsed.ok) {
+    console.error(`[api] POST /api/sessions: validation failed: ${parsed.error}`);
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
 
+  const s = parsed.selections;
+  console.log(`[api] POST /api/sessions: ${s.technologies.join(", ")} | ${s.difficulty} | ${s.jobTitle} | ${s.questionsPerTech} q/tech`);
+
   const session = await createSession(parsed.selections);
+  console.log(`[api] POST /api/sessions: created session ${session.id}`);
   await startGeneration(session.id, parsed.selections);
 
   return NextResponse.json({ id: session.id, status: session.status });

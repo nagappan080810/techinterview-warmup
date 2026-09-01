@@ -1,4 +1,5 @@
 import { getEmbeddedClient } from "./generator";
+import { askClarificationDirectly } from "./openai-direct";
 import type { ChatMessage, GenerationQuestion } from "./types";
 
 const AGENT = "mcq-clarify";
@@ -44,14 +45,30 @@ export async function askAboutQuestion(req: AskQuestionRequest): Promise<AskResu
     message: req.message,
   };
 
+  // When embedded client is unavailable, fall back to direct API.
+  if (!client) {
+    console.log(`[clarify] embedded client unavailable, trying direct API (zen → openrouter)`);
+    const result = await askClarificationDirectly(payload, "zen");
+    if (result.ok) return result;
+    console.warn(`[clarify] zen failed: ${result.error}, trying openrouter`);
+    // Try OpenRouter as second fallback
+    const orResult = await askClarificationDirectly(payload, "openrouter");
+    if (orResult.ok) return orResult;
+    console.error(`[clarify] both providers failed. Zen: ${result.error}; OpenRouter: ${orResult.error}`);
+    return { ok: false, error: `No clarification provider available. Zen: ${result.error}; OpenRouter: ${orResult.error}` };
+  }
+
   try {
+    console.log(`[clarify] creating embedded SDK session`);
     const created = await client.session.create({
       query: { directory: PROJECT_ROOT },
       body: { title: "MCQ clarify" },
     });
     if (!created.data) {
       const e = created.error as { message?: string } | undefined;
-      return { ok: false, error: `Failed to create opencode session: ${e?.message ?? "unknown"}` };
+      const msg = e?.message ?? "unknown";
+      console.error(`[clarify] failed to create SDK session: ${msg}`);
+      return { ok: false, error: `Failed to create opencode session: ${msg}` };
     }
     const sdkSessionId = created.data.id;
 
@@ -63,6 +80,7 @@ export async function askAboutQuestion(req: AskQuestionRequest): Promise<AskResu
       }
     };
 
+    console.log(`[clarify] dispatching to agent "${AGENT}" (SDK session ${sdkSessionId})`);
     const res = await withTimeout(
       client.session.prompt({
         path: { id: sdkSessionId },
@@ -78,11 +96,14 @@ export async function askAboutQuestion(req: AskQuestionRequest): Promise<AskResu
 
     if (!res.data) {
       const e = res.error as { message?: string } | undefined;
-      return { ok: false, error: `Agent failed to respond: ${e?.message ?? "unknown"}` };
+      const msg = e?.message ?? "unknown";
+      console.error(`[clarify] agent failed to respond: ${msg}`);
+      return { ok: false, error: `Agent failed to respond: ${msg}` };
     }
     if (res.data.info?.error) {
       const e = res.data.info.error as { message?: string; body?: unknown };
       const msg = e.message ?? (typeof e.body === "string" ? e.body : "unknown");
+      console.error(`[clarify] agent error: ${msg}`);
       return { ok: false, error: `Agent reported an error: ${msg}` };
     }
 
@@ -94,11 +115,14 @@ export async function askAboutQuestion(req: AskQuestionRequest): Promise<AskResu
     }
     answer = answer.trim();
     if (!answer) {
+      console.warn(`[clarify] agent returned empty answer`);
       return { ok: false, error: "Agent returned an empty answer." };
     }
+    console.log(`[clarify] success (${answer.length} chars)`);
     return { ok: true, answer };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[clarify] SDK error: ${msg}`);
     if (/timed out/i.test(msg)) {
       return { ok: false, error: msg };
     }

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BankedQuestion, GenerationQuestion, QuizSelections } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = "/tmp/data";
 const BANK_FILE = path.join(DATA_DIR, "question-bank.json");
 
 interface QuestionBank {
@@ -19,8 +19,12 @@ async function readBank(): Promise<QuestionBank> {
 }
 
 async function writeBank(bank: QuestionBank): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(BANK_FILE, JSON.stringify(bank, null, 2), "utf8");
+  try {
+    await mkdir(DATA_DIR, { recursive: true });
+    await writeFile(BANK_FILE, JSON.stringify(bank, null, 2), "utf8");
+  } catch {
+    // No-op on read-only filesystems (e.g. Vercel serverless)
+  }
 }
 
 /** Return already-existing question texts for the selected technologies/areas, so the generator can avoid repeating them. */

@@ -1,13 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import type { QuizSelections, QuizSession } from "./types";
-
-const DATA_DIR = "/tmp/data";
-const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
-
-function sessionFile(id: string): string {
-  return path.join(SESSIONS_DIR, `${id}.json`);
-}
+import {
+  getSessionFromStore,
+  setSessionInStore,
+  deleteSessionFromStore,
+  listSessionsFromStore,
+} from "./session-store";
 
 export async function createSession(selections: QuizSelections): Promise<QuizSession> {
   const session: QuizSession = {
@@ -19,31 +16,16 @@ export async function createSession(selections: QuizSelections): Promise<QuizSes
     answers: {},
     chats: {},
   };
-  try {
-    await mkdir(SESSIONS_DIR, { recursive: true });
-    await writeSession(session);
-  } catch {
-    // Vercel / serverless: no writable filesystem — session exists in-memory only
-  }
+  setSessionInStore(session);
   return session;
 }
 
 export async function getSession(id: string): Promise<QuizSession | null> {
-  try {
-    const raw = await readFile(sessionFile(id), "utf8");
-    return JSON.parse(raw) as QuizSession;
-  } catch {
-    return null;
-  }
+  return getSessionFromStore(id) ?? null;
 }
 
 export async function writeSession(session: QuizSession): Promise<void> {
-  try {
-    await mkdir(SESSIONS_DIR, { recursive: true });
-    await writeFile(sessionFile(session.id), JSON.stringify(session, null, 2), "utf8");
-  } catch {
-    // No-op on read-only filesystems (e.g. Vercel serverless)
-  }
+  setSessionInStore(session);
 }
 
 export async function patchSession(
@@ -53,29 +35,16 @@ export async function patchSession(
   const session = await getSession(id);
   if (!session) return null;
   const updated = { ...session, ...patch, answers: patch.answers ?? session.answers };
-  await writeSession(updated);
+  setSessionInStore(updated);
   return updated;
 }
 
 export async function listSessions(): Promise<QuizSession[]> {
-  const { readdir } = await import("node:fs/promises");
-  try {
-    const files = await readdir(SESSIONS_DIR);
-    const ids = files.filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
-    const sessions = await Promise.all(ids.map((id) => getSession(id)));
-    return sessions.filter((s): s is QuizSession => s !== null).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch {
-    return [];
-  }
+  return listSessionsFromStore();
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  try {
-    const { rm } = await import("node:fs/promises");
-    await rm(sessionFile(id), { force: true });
-  } catch {
-    // No-op on read-only filesystems
-  }
+  deleteSessionFromStore(id);
 }
 
 function generateId(): string {

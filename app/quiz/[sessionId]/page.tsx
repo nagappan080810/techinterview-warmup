@@ -342,7 +342,16 @@ export default function QuizPage() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatThread, chatOpen]);
 
-  const next = () => {
+  const next = async () => {
+    try {
+      await fetch(`/api/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionIndex: index, selectedIndexes: selected }),
+      });
+    } catch {
+      // non-fatal
+    }
     const nextIndex = index + 1;
     if (nextIndex < total) {
       if (timingMode === "per-tech" && questions[nextIndex]?.technology !== question?.technology) {

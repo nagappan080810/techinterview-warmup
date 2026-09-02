@@ -446,21 +446,35 @@ function subscribeToSessionEvents(client: OpencodeClient, sdkSessionId: string |
   const stop = () => {
     disposed = true;
   };
-  try {
-    void client.global
-      .event({
+  void (async () => {
+    try {
+      // global.event() resolves (not returns) to { stream } — an AsyncGenerator.
+      // Its onSseEvent callback only fires while that generator is consumed, so
+      // we must await the promise and then iterate the stream.
+      const result = await client.global.event({
         onSseEvent: (ev) => {
           if (disposed) return;
-          const e = ev as unknown as { type?: string; properties?: { sessionID?: string } };
-          if (sdkSessionId && e.properties?.sessionID === sdkSessionId) onEvent();
+          // /global/event wraps each payload: data = { payload: { id, type,
+          // properties: { sessionID } } }. Unwrap to read the real event.
+          const data = (ev as unknown as { data?: unknown }).data as
+            | { payload?: { properties?: { sessionID?: string } } }
+            | undefined;
+          if (sdkSessionId && data?.payload?.properties?.sessionID === sdkSessionId) onEvent();
         },
-      })
-      .catch(() => {
-        // Event subscription is best-effort; progress is optional.
+        onSseError: () => {
+          // best-effort; progress is optional
+        },
       });
-  } catch {
-    // ignore
-  }
+      const stream = (result as unknown as { stream?: AsyncIterable<unknown> }).stream;
+      if (!stream) return;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ignored of stream) {
+        // iterating keeps the SSE connection alive and drives onSseEvent
+      }
+    } catch {
+      // best-effort; progress is optional
+    }
+  })();
   return stop;
 }
 

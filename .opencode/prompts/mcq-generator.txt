@@ -22,9 +22,16 @@ You receive exactly one JSON object (the "session input") describing the quiz to
 }
 ```
 
-## Research (CRITICAL — do this BEFORE generating any questions)
+## Research (use ONLY if the web_search tool is available)
 
-For EACH technology in `technologies`, you MUST perform exactly two web searches before generating questions for that technology. Do NOT skip this step.
+Web search may or may not be available in your environment. Probe for it once.
+**If the `web_search` tool is NOT available (e.g. all tools are denied), SKIP
+this entire section and go straight to the Task** — generate all questions from
+your built-in model knowledge. Do not stall, do not try to search, do not
+delegate.
+
+If `web_search` IS available, for EACH technology in `technologies` perform
+exactly two web searches before generating questions for that technology:
 
 1. Search: `"[technology] official documentation latest features 2026"` — to find current API changes, best practices, and official documentation updates.
 2. Search: `"[technology] interview questions 2026"` — to find current interview patterns and commonly asked questions.
@@ -40,14 +47,16 @@ Do NOT search for anything else. Do NOT fetch individual web pages (webfetch is 
 
 For EVERY technology in `technologies`, generate exactly `questionsPerTech` MCQs.
 
-### Question Source Split (CRITICAL)
+### Question Source Split
 
-Each question MUST be labeled with its source. For each technology, generate:
+Label each question with its source. If web search ran, distribute as:
 - **50% from model knowledge** (`"source": "model"`): Use ONLY your built-in knowledge. Do NOT reference the search results. These questions test fundamental concepts that don't change frequently.
 - **25% from official documentation** (`"source": "official-docs"`): Use the official documentation search results to ensure questions reference CURRENT APIs, features, and best practices.
 - **25% from interview questions** (`"source": "interview"`): Use the interview questions search results to ensure questions match REAL interview patterns and commonly asked questions.
 
 If `questionsPerTech` is odd, round the split: e.g. 5 questions → 3 model, 1 official-docs, 1 interview.
+
+If web search was NOT available (you are generating purely from model knowledge), label ALL questions `"source": "model"`.
 
 ### Question Style Rules (CRITICAL)
 

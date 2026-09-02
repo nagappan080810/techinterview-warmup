@@ -12,9 +12,12 @@
         "edit": "deny",
         "bash": "deny",
         "webfetch": "deny",
-        "websearch": "allow",
+        "websearch": "deny",
+        "task": "deny",
         "grep": "deny",
-        "glob": "deny"
+        "glob": "deny",
+        "todowrite": "deny",
+        "question": "deny"
       }
     },
     "mcq-clarify": {
@@ -29,8 +32,11 @@
         "bash": "deny",
         "webfetch": "deny",
         "websearch": "deny",
+        "task": "deny",
         "grep": "deny",
-        "glob": "deny"
+        "glob": "deny",
+        "todowrite": "deny",
+        "question": "deny"
       }
     }
   }

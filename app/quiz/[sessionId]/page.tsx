@@ -144,26 +144,45 @@ export default function QuizPage() {
         eventSource = null;
       });
 
+      let reconnectAttempts = 0;
+      const MAX_RECONNECTS = 15;
+
       eventSource.onerror = () => {
         // Connection lost — fallback to a single poll, then reconnect
         eventSource?.close();
         eventSource = null;
         void fetch(`/api/sessions/${sessionId}`)
-          .then((r) => r.json())
-          .then((d) => {
-            const s = (d as { session: QuizSession }).session;
+          .then(async (r) => {
+            if (r.status === 404) {
+              setError("This session no longer exists (the server likely restarted). Please start a new set.");
+              return;
+            }
+            const d = (await r.json()) as { session?: QuizSession; error?: string };
+            const s = d.session;
+            if (!s) {
+              setError(d.error ?? "Could not load this session. Please start a new set.");
+              return;
+            }
             setSession(s);
             if (s.status === "complete") {
               setStage((prev) => (prev === "loading" ? "intro" : prev));
             } else if (s.status === "error") {
               setError(s.error ?? "Generation failed.");
-            } else if (s.status === "generating") {
+            } else if (reconnectAttempts >= MAX_RECONNECTS) {
+              setError("Generation is taking too long. It may be stuck — please start a new set.");
+            } else {
+              reconnectAttempts += 1;
               // Reconnect after a brief delay
               setTimeout(connect, 2000);
             }
           })
           .catch(() => {
-            setTimeout(connect, 2000);
+            if (reconnectAttempts >= MAX_RECONNECTS) {
+              setError("Could not reach the server. Please refresh and start a new set.");
+            } else {
+              reconnectAttempts += 1;
+              setTimeout(connect, 2000);
+            }
           });
       };
     };
@@ -346,6 +365,18 @@ export default function QuizPage() {
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   if (stage === "loading") {
+    // A fatal error (session gone, timeout, unreachable server) should show an
+    // escape hatch instead of a spinner that never resolves.
+    if (error && !session) {
+      return (
+        <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
+          <p className="text-red-600 dark:text-red-400">{error}</p>
+          <button onClick={() => router.push("/")} className="rounded-full border border-zinc-300 px-5 py-2 text-sm font-medium dark:border-zinc-700">
+            Back to welcome page
+          </button>
+        </main>
+      );
+    }
     return (
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
         <div className="h-10 w-10 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-800 dark:border-zinc-700 dark:border-t-zinc-200" />

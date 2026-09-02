@@ -11,6 +11,7 @@ const SDK_PORT = Number(process.env.OPENCODE_SDK_PORT ?? 4097);
 const SDK_TIMEOUT_MS = Number(process.env.MCQ_GENERATOR_TIMEOUT_MS ?? 360_000);
 const USE_EMBEDDED = process.env.USE_EMBEDDED_OPENCODE !== "false";
 const OPENROUTER_ONLY = process.env.OPENROUTER_ONLY === "true";
+const NVIDIA_ONLY = process.env.NVIDIA_ONLY === "true";
 
 // One lazily-started embedded opencode server shared across the whole Next.js
 // process. We spawn `opencode serve` once and reuse it (the CLI binary provides
@@ -179,6 +180,15 @@ async function runSplitGeneration(
   const { sessionId } = job;
   const techs = selections.technologies;
 
+  // When NVIDIA_ONLY=true, send all techs to NVIDIA (skip Zen and OpenRouter)
+  if (NVIDIA_ONLY) {
+    console.log(`[gen] session ${sessionId}: NVIDIA_ONLY mode — all techs → NVIDIA`);
+    const providers: Array<{ techs: string[]; provider: DirectProvider }> = [
+      { techs, provider: "nvidia" },
+    ];
+    return await runProviderBatches(job, selections, existing, providers);
+  }
+
   // When OPENROUTER_ONLY=true, send all techs to OpenRouter (skip Zen entirely)
   if (OPENROUTER_ONLY) {
     console.log(`[gen] session ${sessionId}: OPENROUTER_ONLY mode — all techs → OpenRouter`);
@@ -252,7 +262,8 @@ async function runProviderBatches(
   // Fallback: for each failed batch, retry its techs through the other provider
   if (failedBatches.length > 0) {
     for (const failed of failedBatches) {
-      const fallbackProvider: DirectProvider = failed.provider === "zen" ? "openrouter" : "zen";
+      // NVIDIA and Zen both fall back to OpenRouter; OpenRouter falls back to Zen
+      const fallbackProvider: DirectProvider = failed.provider === "openrouter" ? "zen" : "openrouter";
       console.warn(`[gen] session ${sessionId}: ${failed.provider} failed for [${failed.techs.join(", ")}] — falling back to ${fallbackProvider} (reason: ${failed.reason})`);
 
       const fallbackSelections = { ...selections, technologies: failed.techs };

@@ -20,8 +20,9 @@ Copy `.env.example` to `.env.local` and adjust as needed. Next.js loads `.env.lo
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `USE_EMBEDDED_OPENCODE` | `true` | **`true`** — spawns a local `opencode serve` process and drives the `mcq-generator` agent via the SDK. Requires `opencode-ai` installed globally and authenticated (`opencode auth login`). **`false`** — bypasses the embedded server entirely; questions are generated via direct HTTP calls to Zen and/or OpenRouter APIs. Required for Vercel / serverless deployments. |
+| `USE_EMBEDDED_OPENCODE` | `true` | **`true`** — spawns a local `opencode serve` process and drives the `mcq-generator` agent via the SDK. Requires `opencode-ai` installed globally and authenticated (`opencode auth login`). **`false`** — bypasses the embedded server entirely; questions are generated via direct HTTP calls to Zen, OpenRouter and/or NVIDIA APIs. Required for Vercel / serverless deployments. |
 | `OPENROUTER_ONLY` | `false` | When `USE_EMBEDDED_OPENCODE=false`, set to `true` to route **all** technologies through OpenRouter (skips Zen). Useful when Zen rate-limits you. When `false`, technologies are split 50/50 between Zen and OpenRouter. |
+| `NVIDIA_ONLY` | `false` | When `USE_EMBEDDED_OPENCODE=false`, set to `true` to route **all** technologies through NVIDIA Build (skips Zen and OpenRouter). Takes precedence over `OPENROUTER_ONLY`. Failed NVIDIA batches fall back to OpenRouter. |
 
 ### Direct API keys (used when `USE_EMBEDDED_OPENCODE=false`)
 
@@ -30,6 +31,8 @@ Copy `.env.example` to `.env.local` and adjust as needed. Next.js loads `.env.lo
 | `OPENCODE_ZEN_API_KEY` | Only if `OPENROUTER_ONLY=false` | API key for OpenCode Zen (`big-pickle` model, free tier). Get yours at https://opencode.ai/auth |
 | `OPENROUTER_API_KEY` | Yes | API key for OpenRouter. Get yours at https://openrouter.ai/keys |
 | `OPENROUTER_MODEL` | No | Override the OpenRouter model. Default: `openrouter/free` (routes to whatever free model is available — small models may not follow complex prompts reliably). Recommended: set to a specific model like `meta-llama/llama-3.1-8b-instruct:free` for consistent results. |
+| `NVIDIA_API_KEY` | Only if `NVIDIA_ONLY=true` | API key for NVIDIA Build (OpenAI-compatible endpoint, prefix `nvapi-`). Get yours at https://build.nvidia.com → Settings → API Keys |
+| `NVIDIA_MODEL` | No | Override the NVIDIA model. Default: `nvidia/nemotron-3.5-lightning-30b-a3b` |
 
 ### Embedded server settings (used when `USE_EMBEDDED_OPENCODE=true`)
 
@@ -62,6 +65,14 @@ USE_EMBEDDED_OPENCODE=false
 OPENROUTER_ONLY=true
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_MODEL=meta-llama/llama-3.1-8b-instruct:free
+```
+
+**Direct API — NVIDIA only (`nemotron-3.5-lightning-30b`):**
+```env
+USE_EMBEDDED_OPENCODE=false
+NVIDIA_ONLY=true
+NVIDIA_API_KEY=nvapi-...
+NVIDIA_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 ## Flow

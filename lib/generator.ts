@@ -2,6 +2,7 @@ import { createOpencode, createOpencodeClient } from "@opencode-ai/sdk";
 import type { OpencodeClient } from "@opencode-ai/sdk/client";
 import { appendToBank, getExistingQuestions } from "./question-bank";
 import { generateQuestionsDirectly, type DirectProvider } from "./openai-direct";
+import { generateViaCloudflare, getCloudflareWorkerUrl } from "./cloudflare-client";
 import { patchSession } from "./sessions";
 import type { GenerationQuestion, QuizSelections } from "./types";
 
@@ -102,6 +103,21 @@ async function runGeneration(job: GenerationJob, selections: QuizSelections): Pr
     const existing = await getExistingQuestions(selections, []);
     console.log(`[gen] session ${sessionId}: ${existing.length} existing questions in bank`);
 
+    // Cloudflare Worker path (serverless-friendly): when CLOUDFLARE_WORKER_URL
+    // is set, route all generation through the worker instead of Zen/OpenRouter.
+    // Only applies when embedded opencode is disabled.
+    if (!USE_EMBEDDED && getCloudflareWorkerUrl()) {
+      console.log(`[gen] session ${sessionId}: using Cloudflare Worker path`);
+      let result = await runCloudflareGeneration(job, selections);
+      if (!result.ok && /no question JSON|not valid JSON|zero valid questions/.test(result.error)) {
+        console.log(`[gen] session ${sessionId}: retrying after Cloudflare parse failure: ${result.error}`);
+        await patchSession(sessionId, { lastEventAt: new Date().toISOString() });
+        result = await runCloudflareGeneration(job, selections);
+      }
+      await finishOrFail(job, selections, result);
+      return;
+    }
+
     // When embedded opencode is disabled, split technologies 50/50 between
     // Zen (model knowledge) and OpenRouter (web search) for diverse questions.
     if (!USE_EMBEDDED) {
@@ -170,6 +186,46 @@ async function runGeneration(job: GenerationJob, selections: QuizSelections): Pr
   }
 }
 
+/** Generate questions for a session through the Cloudflare Worker. */
+async function runCloudflareGeneration(job: GenerationJob, selections: QuizSelections): Promise<GenerationResult> {
+  const { sessionId } = job;
+  console.log(`[gen] session ${sessionId}: calling Cloudflare Worker (${selections.technologies.join(", ")}, ${selections.difficulty}, ${selections.jobTitle})`);
+
+  const result = await generateViaCloudflare(selections);
+  if (!result.ok) {
+    console.error(`[gen] session ${sessionId}: Cloudflare Worker failed: ${result.error}`);
+    return { ok: false, error: result.error };
+  }
+  if (result.questions.length === 0) {
+    console.error(`[gen] session ${sessionId}: Cloudflare Worker returned no question JSON`);
+    return { ok: false, error: "Cloudflare Worker returned no question JSON in its output." };
+  }
+
+  console.log(`[gen] session ${sessionId}: Cloudflare Worker returned ${result.questions.length} questions`);
+  return { ok: true, questions: result.questions };
+}
+
+/** Persist a finished (or failed) generation result to the session file and bank. */
+async function finishOrFail(job: GenerationJob, selections: QuizSelections, result: GenerationResult): Promise<void> {
+  const { sessionId } = job;
+  if (!result.ok) {
+    console.error(`[gen] session ${sessionId}: generation failed: ${result.error}`);
+    await patchSession(sessionId, { status: ERROR, error: result.error, completedAt: new Date().toISOString() });
+    return;
+  }
+
+  const questions = shuffleCorrectPositions(enforcePerTechCount(result.questions, selections));
+  await appendToBank(questions, sessionId, selections);
+  console.log(`[gen] session ${sessionId}: complete (${questions.length} questions)`);
+  await patchSession(sessionId, {
+    status: COMPLETE,
+    questions,
+    generatedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    error: undefined,
+  });
+}
+
 /** 50/50 split generation: half via Zen (model knowledge), half via OpenRouter (web search). */
 async function runSplitGeneration(
   job: GenerationJob,
@@ -181,7 +237,6 @@ async function runSplitGeneration(
 
   // When OPENROUTER_ONLY=true, send all techs to OpenRouter (skip Zen entirely)
   if (OPENROUTER_ONLY) {
-    console.log(`[gen] session ${sessionId}: OPENROUTER_ONLY mode — all techs → OpenRouter`);
     const providers: Array<{ techs: string[]; provider: DirectProvider }> = [
       { techs, provider: "openrouter" },
     ];

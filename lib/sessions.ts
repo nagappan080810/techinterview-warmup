@@ -34,6 +34,7 @@ export async function patchSession(
 ): Promise<QuizSession | null> {
   const session = await getSession(id);
   if (!session) return null;
+  if (session.status === "expired" && patch.status !== "expired") return session;
   const updated = { ...session, ...patch, answers: patch.answers ?? session.answers };
   setSessionInStore(updated);
   return updated;

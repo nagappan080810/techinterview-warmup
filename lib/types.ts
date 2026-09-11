@@ -52,7 +52,7 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export type SessionStatus = "queued" | "generating" | "complete" | "error";
+export type SessionStatus = "queued" | "generating" | "complete" | "error" | "expired";
 
 export interface QuizSession {
   id: string;

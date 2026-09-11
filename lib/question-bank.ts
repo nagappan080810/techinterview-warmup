@@ -3,7 +3,7 @@ import path from "node:path";
 import type { BankedQuestion, GenerationQuestion, QuizSelections } from "./types";
 
 const DATA_DIR = "/tmp/data";
-const BANK_FILE = path.join(DATA_DIR, "question-bank.json");
+const BANK_FILE = path.join(DATA_DIR, `question-bank-${Date.now()}.json`);
 
 interface QuestionBank {
   questions: BankedQuestion[];

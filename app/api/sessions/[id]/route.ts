@@ -17,7 +17,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const session = await getSession(id);
   if (!session) return NextResponse.json({ error: "Session not found." }, { status: 404 });
 
-  let body: { questionIndex?: unknown; selectedIndexes?: unknown; resetAnswers?: unknown } | null = null;
+  let body: { questionIndex?: unknown; selectedIndexes?: unknown; resetAnswers?: unknown; expireGeneration?: unknown } | null = null;
   try {
     body = await request.json();
   } catch {
@@ -25,6 +25,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   }
   if (!body) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  if (body.expireGeneration === true) {
+    if (session.status !== "queued" && session.status !== "generating") {
+      return NextResponse.json({ ok: true, session });
+    }
+    const updated = await patchSession(id, {
+      status: "expired",
+      error: "Generation expired after one minute.",
+      completedAt: new Date().toISOString(),
+    });
+    return NextResponse.json({ ok: true, session: updated });
   }
 
   if (body.resetAnswers === true) {

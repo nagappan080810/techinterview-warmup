@@ -33,7 +33,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       });
 
       // If already complete or error, close immediately
-      if (session.status === "complete" || session.status === "error") {
+      if (session.status === "complete" || session.status === "error" || session.status === "expired") {
         send("done", { status: session.status });
         controller.close();
         return;
@@ -88,12 +88,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
               clearInterval(pollInterval);
               unsub?.catch(() => {});
               controller.close();
-            } else if (fresh.status === "error") {
+            } else if (fresh.status === "error" || fresh.status === "expired") {
               send("error", {
-                status: "error",
+                status: fresh.status,
                 error: fresh.error,
               });
-              send("done", { status: "error" });
+              send("done", { status: fresh.status });
               clearInterval(pollInterval);
               unsub?.catch(() => {});
               controller.close();

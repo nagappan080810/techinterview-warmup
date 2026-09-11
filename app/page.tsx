@@ -8,6 +8,8 @@ import SessionBadge from "@/app/components/SessionBadge";
 
 type Stage = "form" | "generating" | "error";
 
+const GENERATION_TIMEOUT_MS = 60_000;
+
 interface SessionStatusPayload {
   status: SessionStatus;
   eventCount: number;
@@ -94,6 +96,23 @@ export default function WelcomePage() {
     const startTime = Date.now();
 
     const eventSource = new EventSource(`/api/sessions/${id}/stream`);
+    const timeoutId = setTimeout(() => {
+      eventSource.close();
+      stopPolling();
+      void fetch(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expireGeneration: true }),
+      }).catch(() => {});
+      setSessionId(null);
+      setStage("form");
+      setError("Generation expired after one minute. Please start a new set.");
+    }, GENERATION_TIMEOUT_MS);
+
+    const closeEventSource = () => {
+      clearTimeout(timeoutId);
+      eventSource.close();
+    };
 
     eventSource.addEventListener("progress", (e: MessageEvent) => {
       const data = JSON.parse(e.data) as { eventCount: number };
@@ -102,7 +121,7 @@ export default function WelcomePage() {
     });
 
     eventSource.addEventListener("complete", () => {
-      eventSource.close();
+      closeEventSource();
       setStage("form");
       router.push(`/quiz/${id}`);
     });
@@ -110,7 +129,7 @@ export default function WelcomePage() {
     eventSource.addEventListener("error", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as { error: string };
-        eventSource.close();
+        closeEventSource();
         setStage("error");
         setError(data.error ?? "Generation failed.");
       } catch {
@@ -119,7 +138,7 @@ export default function WelcomePage() {
     });
 
     eventSource.addEventListener("done", () => {
-      eventSource.close();
+      closeEventSource();
     });
 
     eventSource.onerror = () => {
@@ -134,7 +153,7 @@ export default function WelcomePage() {
           if (s.status === "complete") {
             setStage("form");
             router.push(`/quiz/${id}`);
-          } else if (s.status === "error") {
+          } else if (s.status === "error" || s.status === "expired") {
             setStage("error");
             setError(s.error ?? "Generation failed.");
           }
@@ -143,7 +162,7 @@ export default function WelcomePage() {
     };
 
     // Store for cleanup
-    pollRef.current = { close: () => eventSource.close() } as unknown as ReturnType<typeof setInterval>;
+    pollRef.current = { close: closeEventSource } as unknown as ReturnType<typeof setInterval>;
   };
 
   const reset = () => {
@@ -172,7 +191,7 @@ export default function WelcomePage() {
             {sessionId ? "Agent is generating your questions…" : "Starting generation…"}
           </h2>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {totalQuestions} questions across {technologies.length} technology
+            {totalQuestions} questions across {technologies.length} technolog
             {technologies.length > 1 ? "ies" : "y"} — this takes a few seconds.
           </p>
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">

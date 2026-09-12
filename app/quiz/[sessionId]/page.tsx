@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GenerationQuestion, QuizSession, ChatMessage } from "@/lib/types";
 import SessionBadge from "@/app/components/SessionBadge";
 import QuestionText from "@/app/components/QuestionText";
@@ -31,6 +31,12 @@ export default function QuizPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [optimistic, setOptimistic] = useState<ChatMessage | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  // True once the user deliberately finishes (navigates to results) — from then
+  // on, a page unload must NOT return the Redis-sourced questions.
+  const finishedRef = useRef(false);
+  const restoreBeaconSentRef = useRef(false);
+  const hasRedisSourcedRef = useRef(false);
+  const mountedRef = useRef(true);
 
   // Displayed thread = persisted messages for the current question + the
   // in-flight (optimistic) message while the assistant is replying.
@@ -62,11 +68,12 @@ export default function QuizPage() {
           answers?: QuizSession["answers"];
           chats?: QuizSession["chats"];
           error?: string;
+          hasRedisSourced?: boolean;
         };
         setSession((prev) => {
           const base: QuizSession = prev ?? {
             id: sessionId,
-            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior-Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
             status: "generating",
             createdAt: new Date().toISOString(),
             eventCount: 0,
@@ -81,6 +88,7 @@ export default function QuizPage() {
             answers: data.answers ?? base.answers,
             chats: data.chats ?? base.chats,
             error: data.error ?? base.error,
+            hasRedisSourced: data.hasRedisSourced ?? base.hasRedisSourced,
           };
         });
         if (data.status === "complete") {
@@ -106,11 +114,12 @@ export default function QuizPage() {
           answers?: QuizSession["answers"];
           chats?: QuizSession["chats"];
           eventCount: number;
+          hasRedisSourced?: boolean;
         };
         setSession((prev) => {
           const base: QuizSession = prev ?? {
             id: sessionId,
-            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+            selections: data.selections ?? { technologies: [], difficulty: "Medium", jobTitle: "Senior-Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
             status: "complete",
             createdAt: new Date().toISOString(),
             eventCount: 0,
@@ -125,6 +134,7 @@ export default function QuizPage() {
             chats: data.chats ?? base.chats,
             eventCount: data.eventCount,
             completedAt: new Date().toISOString(),
+            hasRedisSourced: data.hasRedisSourced ?? base.hasRedisSourced,
           };
         });
         setStage((prev) => (prev === "loading" ? "intro" : prev));
@@ -187,12 +197,96 @@ export default function QuizPage() {
       };
     };
 
-    connect();
+    // Open the stream only when the session is still being generated.
+    // Already-complete sessions (e.g. served entirely from the Redis queue) go
+    // straight to the intro without consuming a stream connection.
+    let cancelled = false;
+    void fetch(`/api/sessions/${sessionId}`)
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.status === 404) {
+          setError("This session no longer exists (the server likely restarted). Please start a new set.");
+          return;
+        }
+        const d = (await r.json()) as { session?: QuizSession; error?: string };
+        const s = d.session;
+        if (cancelled) return;
+        if (!s) {
+          setError(d.error ?? "Could not load this session. Please start a new set.");
+          return;
+        }
+        setSession(s);
+        if (s.status === "complete") {
+          setStage((prev) => (prev === "loading" ? "intro" : prev));
+        } else if (s.status === "error") {
+          setError(s.error ?? "Generation failed.");
+        } else {
+          connect();
+        }
+      })
+      .catch(() => {
+        // Couldn't confirm the state — streaming is the safest fallback.
+        if (!cancelled) connect();
+      });
 
     return () => {
+      cancelled = true;
       eventSource?.close();
+      eventSource = null;
     };
   }, [sessionId]);
+
+  // If the assessment is abandoned before finishing (tab closed, refresh, SPA
+  // navigation away, or the "← New set" button), hand the Redis-sourced
+  // questions straight back to the queue and delete the in-memory session.
+  // Finished quizzes are exempt (finishedRef flips first); a single-fire guard
+  // prevents double-sends when several triggers fire on the same leave.
+  const fireRestore = useCallback(
+    (reason: string) => {
+      if (finishedRef.current) return;
+      if (restoreBeaconSentRef.current) return;
+      if (!hasRedisSourcedRef.current) return;
+      restoreBeaconSentRef.current = true;
+      const url = `/api/sessions/${sessionId}/restore`;
+      console.log(`[quiz] restore (${reason}): sending beacon to ${url} to return questions to Redis`);
+      try {
+        navigator.sendBeacon(url, new Blob([JSON.stringify({ reason })], { type: "application/json" }));
+      } catch (err) {
+        console.error(`[quiz] restore (${reason}): sendBeacon failed`, err);
+        restoreBeaconSentRef.current = false; // allow a retry via another trigger
+      }
+    },
+    [sessionId],
+  );
+
+  useEffect(() => {
+    hasRedisSourcedRef.current = session?.hasRedisSourced === true;
+  }, [session?.hasRedisSourced]);
+
+  // Real page unloads: tab close, refresh, navigating to an external URL.
+  useEffect(() => {
+    const onPageHide = () => fireRestore("pagehide");
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [fireRestore]);
+
+  // Component unmount: covers SPA navigation away from the quiz page, which
+  // never fires pagehide. The one-tick delay lets React StrictMode's dev-only
+  // mount → unmount → remount cycle settle, and the pathname check skips dev
+  // hot-reloads (mount/unmount with the URL unchanged), so only a real unmount
+  // onto a different route (mountedRef stays false, pathname changes) restores.
+  useEffect(() => {
+    mountedRef.current = true;
+    const quizPath = `/quiz/${sessionId}`;
+    return () => {
+      mountedRef.current = false;
+      setTimeout(() => {
+        if (mountedRef.current) return;
+        if (window.location.pathname === quizPath) return;
+        fireRestore("unmount");
+      }, 0);
+    };
+  }, [fireRestore, sessionId]);
 
   const timerActive = timingMode !== "none" && stage === "question" && question !== undefined;
 
@@ -343,11 +437,18 @@ export default function QuizPage() {
   }, [chatThread, chatOpen]);
 
   const next = async () => {
+    const onLastQuestion = index + 1 === total;
     try {
       await fetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionIndex: index, selectedIndexes: selected }),
+        body: JSON.stringify({
+          questionIndex: index,
+          selectedIndexes: selected,
+          // The final question marks the assessment complete, so an unload
+          // must not return these questions to the queue.
+          assessmentCompleted: onLastQuestion,
+        }),
       });
     } catch {
       // non-fatal
@@ -365,6 +466,7 @@ export default function QuizPage() {
       setIndex(nextIndex);
       return;
     }
+    finishedRef.current = true;
     router.push(`/results/${sessionId}`);
   };
 
@@ -373,12 +475,20 @@ export default function QuizPage() {
   const timeLeft = Math.max(0, Math.ceil(remainingMs / 1000));
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
+  // Explicit abandon ("← New set" mid-quiz): hand the questions back to the
+  // queue immediately, then navigate away.
+  const abandonQuiz = () => {
+    fireRestore("abandoned");
+    router.push("/");
+  };
+
   if (stage === "loading") {
-    // A fatal error (session gone, timeout, unreachable server) should show an
-    // escape hatch instead of a spinner that never resolves.
-    if (error && !session) {
+    // A fatal error (session gone, timeout, stream failure) should hide the
+    // spinner and show an escape hatch instead of leaving the user stranded.
+    if (error) {
       return (
         <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Generation failed</h1>
           <p className="text-red-600 dark:text-red-400">{error}</p>
           <button onClick={() => router.push("/")} className="rounded-full border border-zinc-300 px-5 py-2 text-sm font-medium dark:border-zinc-700">
             Back to welcome page
@@ -388,19 +498,11 @@ export default function QuizPage() {
     }
     return (
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
+        <h1 className="text-2xl font-semibold tracking-tight">Generating your question set</h1>
         <div className="h-10 w-10 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-800 dark:border-zinc-700 dark:border-t-zinc-200" />
         <p className="text-zinc-500 dark:text-zinc-400">Waiting for the agent to finish generating questions…</p>
-        {error && <p className="text-sm font-medium text-red-600 dark:text-red-400">{error}</p>}
-      </main>
-    );
-  }
-
-  if (error && !session) {
-    return (
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <p className="text-red-600 dark:text-red-400">{error}</p>
-        <button onClick={() => router.push("/")} className="rounded-full border border-zinc-300 px-5 py-2 text-sm font-medium dark:border-zinc-700">
-          Back to welcome page
+        <button onClick={() => router.push("/")} className="rounded-full border border-zinc-300 px-5 py-2 text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100">
+          ← Back to welcome page
         </button>
       </main>
     );
@@ -411,7 +513,7 @@ export default function QuizPage() {
     return (
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-start gap-8 px-6 py-16">
         <div className="flex w-full items-center justify-between gap-3">
-          <button onClick={() => router.push("/")} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+          <button onClick={abandonQuiz} className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
             ← New set
           </button>
           <SessionBadge sessionId={sessionId} />
@@ -458,9 +560,12 @@ export default function QuizPage() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-12">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-sm text-zinc-500 dark:text-zinc-400">
-        <span>
-          Question {index + 1} of {total}
-        </span>
+        <div className="flex flex-wrap items-center gap-4">
+          <button onClick={abandonQuiz} className="hover:text-zinc-900 dark:hover:text-zinc-100">
+            ← Back to welcome
+          </button>
+          <span>Question {index + 1} of {total}</span>
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <span className="font-mono text-xs">
             {question.technology} · {question.area} · {question.isMultiSelect ? "multi" : "single"}

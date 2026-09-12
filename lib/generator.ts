@@ -2,8 +2,9 @@ import { createOpencode, createOpencodeClient } from "@opencode-ai/sdk";
 import type { OpencodeClient } from "@opencode-ai/sdk/client";
 import { appendToBank, getExistingQuestions } from "./question-bank";
 import { generateQuestionsDirectly, type DirectProvider } from "./openai-direct";
-import { patchSession } from "./sessions";
-import type { GenerationQuestion, QuizSelections } from "./types";
+import { popQuestions, pushBackClaims, queueKeyFor, redisQueueEnabled } from "./redis-question-queue";
+import { getSession, patchSession } from "./sessions";
+import type { GenerationQuestion, QuizSelections, QuizSession, RedisClaim } from "./types";
 
 const AGENT = "mcq-generator";
 const PROJECT_ROOT = process.cwd();
@@ -79,14 +80,46 @@ export function isSessionGenerating(sessionId: string): boolean {
 }
 
 /** Kick off background generation for a session. Returns immediately; progress is written to the session file. */
-export async function startGeneration(sessionId: string, selections: QuizSelections): Promise<void> {
-  if (activeJobs.has(sessionId)) return;
+export type StartGenerationResult =
+  | { completed: true; session: QuizSession | null }
+  | { completed: false };
+
+/**
+ * Kick off generation for a session. When the Redis queue serves the whole
+ * request, the session is completed and returned synchronously so the caller
+ * (POST /api/sessions) can hand the questions straight back to the client
+ * without a stream round-trip. Partial or empty pulls hand the (already-popped)
+ * queue result to the background generation — nothing is ever popped twice.
+ */
+export async function startGeneration(sessionId: string, selections: QuizSelections): Promise<StartGenerationResult> {
+  if (activeJobs.has(sessionId)) return { completed: false };
   const job: GenerationJob = { sessionId };
   activeJobs.set(sessionId, job);
-  void runGeneration(job, selections);
+
+  const pull = await pullFromQueue(selections);
+
+  // Everything served from the queue — done, no model call, return now.
+  if (pull.status === "full") {
+    console.log(`[gen] session ${sessionId}: served entirely from Redis queue (${pull.questions.length} questions) — synchronous completion`);
+    await patchSession(sessionId, {
+      status: COMPLETE,
+      questions: shuffleCorrectPositions(pull.questions),
+      generatedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: undefined,
+      hasRedisSourced: true,
+      redisClaims: pull.claims,
+    });
+    activeJobs.delete(sessionId);
+    const session = await getSession(sessionId);
+    return { completed: true, session };
+  }
+
+  void runGeneration(job, selections, pull);
+  return { completed: false };
 }
 
-async function runGeneration(job: GenerationJob, selections: QuizSelections): Promise<void> {
+async function runGeneration(job: GenerationJob, selections: QuizSelections, prePull?: QueuePull): Promise<void> {
   const { sessionId } = job;
   const techs = selections.technologies.join(", ");
   const totalQ = selections.technologies.length * selections.questionsPerTech;
@@ -101,6 +134,34 @@ async function runGeneration(job: GenerationJob, selections: QuizSelections): Pr
 
     const existing = await getExistingQuestions(selections, []);
     console.log(`[gen] session ${sessionId}: ${existing.length} existing questions in bank`);
+
+    // Use the pull already performed by startGeneration (never pop twice); when
+    // this function runs standalone, do the pull here.
+    const redisPull = prePull ?? (await pullFromQueue(selections));
+
+    // Everything served from the queue — done, no model call.
+    if (redisPull.status === "full") {
+      console.log(`[gen] session ${sessionId}: served entirely from Redis queue (${redisPull.questions.length} questions)`);
+      await patchSession(sessionId, {
+        status: COMPLETE,
+        questions: shuffleCorrectPositions(redisPull.questions),
+        generatedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        error: undefined,
+        hasRedisSourced: true,
+        redisClaims: redisPull.claims,
+      });
+      return;
+    }
+
+    // Queue covered part of the request — generate only the shortfall.
+    if (redisPull.status === "mixed") {
+      console.log(
+        `[gen] session ${sessionId}: Redis supplied ${redisPull.questions.length} questions, generating shortfall for [${redisPull.shortTechs.join(", ")}]`,
+      );
+      await runMixedGeneration(job, selections, existing, redisPull.questions, redisPull.claims, redisPull.shortCounts);
+      return;
+    }
 
     // When embedded opencode is disabled, split technologies 50/50 between
     // Zen (model knowledge) and OpenRouter (web search) for diverse questions.
@@ -168,6 +229,170 @@ async function runGeneration(job: GenerationJob, selections: QuizSelections): Pr
   } finally {
     activeJobs.delete(sessionId);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Redis queue integration
+// ---------------------------------------------------------------------------
+
+type QueuePull =
+  | { status: "none" }
+  | { status: "full"; questions: GenerationQuestion[]; claims: RedisClaim[] }
+  | {
+      status: "mixed";
+      questions: GenerationQuestion[];
+      claims: RedisClaim[];
+      shortTechs: string[];
+      shortCounts: Record<string, number>;
+    };
+
+/**
+ * Try to serve the whole request from the Redis queue. Returns:
+ *  - "full": every technology got its full questionsPerTech (no model call).
+ *  - "mixed": some technologies were partially covered; the shortfall per
+ *    technology (`shortCounts`) must still be generated — only that shortfall.
+ *  - "none": queue not configured or unreachable — generate everything as today.
+ */
+async function pullFromQueue(selections: QuizSelections): Promise<QueuePull> {
+  if (!redisQueueEnabled()) {
+    console.log("[gen] redis queue not configured (UPSTASH_REDIS_REST_URL unset) — using model generation for everything");
+    return { status: "none" };
+  }
+
+  const claims: RedisClaim[] = [];
+  const questions: GenerationQuestion[] = [];
+  const servedCount = new Map<string, number>();
+
+  try {
+    for (const tech of selections.technologies) {
+      const key = queueKeyFor(selections, tech);
+      const popped = await popQuestions(key, selections.questionsPerTech, tech);
+      servedCount.set(tech, popped.length);
+      for (const p of popped) {
+        questions.push(p.question);
+        claims.push(p.claim);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[gen] redis queue unavailable (${msg}) — falling back to model generation`);
+    // Anything that slipped out before the error must go back.
+    if (claims.length > 0) await pushBackClaims(claims).catch(() => {});
+    return { status: "none" };
+  }
+
+  const shortCounts: Record<string, number> = {};
+  for (const tech of selections.technologies) {
+    const served = servedCount.get(tech) ?? 0;
+    const missing = selections.questionsPerTech - served;
+    if (missing > 0) shortCounts[tech] = missing;
+  }
+  const shortTechs = Object.keys(shortCounts);
+
+  if (shortTechs.length === 0) {
+    console.log(`[gen] redis pull: served ${questions.length} question(s) in full — no model call needed`);
+    return { status: "full", questions, claims };
+  }
+  console.log(
+    `[gen] redis pull: served ${questions.length} question(s), shortfall per technology: ${Object.entries(shortCounts)
+      .map(([t, n]) => `${t}=${n}`)
+      .join(", ")}`,
+  );
+  return { status: "mixed", questions, claims, shortTechs, shortCounts };
+}
+
+/**
+ * Generate exactly the missing questions per technology (never the full
+ * questionsPerTech for a partially-covered technology), then merge with the
+ * queue questions. Technologies with the same shortfall share a generation
+ * batch so the provider/agent prompt keeps a single uniform count.
+ */
+async function runMixedGeneration(
+  job: GenerationJob,
+  selections: QuizSelections,
+  existing: Array<{ question: string; technology: string; area: string }>,
+  redisQuestions: GenerationQuestion[],
+  claims: RedisClaim[],
+  shortCounts: Record<string, number>,
+): Promise<void> {
+  const { sessionId } = job;
+
+  const groups = new Map<number, string[]>();
+  for (const tech of selections.technologies) {
+    const missing = shortCounts[tech];
+    if (missing > 0) {
+      const bucket = groups.get(missing) ?? [];
+      bucket.push(tech);
+      groups.set(missing, bucket);
+    }
+  }
+
+  const generated: GenerationQuestion[] = [];
+  for (const [missing, techs] of groups) {
+    const remaining: QuizSelections = { ...selections, technologies: techs, questionsPerTech: missing };
+    const remainingExisting = existing.filter((q) => techs.includes(q.technology));
+    const label = `${missing} q/tech for [${techs.join(", ")}]`;
+
+    let result: GenerationResult;
+    if (!USE_EMBEDDED) {
+      console.log(`[gen] session ${sessionId}: generating Redis shortfall (${label}) via direct API path`);
+      result = await runSplitGeneration(job, remaining, remainingExisting);
+    } else {
+      console.log(`[gen] session ${sessionId}: generating Redis shortfall (${label}) via embedded opencode SDK path`);
+      const prompt = buildPrompt({ sessionId, selections: remaining, existing: remainingExisting });
+      result = await spawnOpenCode(job, prompt);
+      if (!result.ok && /no question JSON|not valid JSON|zero valid questions/.test(result.error)) {
+        console.log(`[gen] session ${sessionId}: retrying after parse failure: ${result.error}`);
+        await patchSession(sessionId, { status: "generating", lastEventAt: new Date().toISOString() });
+        result = await spawnOpenCode(job, prompt);
+      }
+    }
+
+    if (!result.ok) {
+      await completeMixedOrFail(job, selections, result, redisQuestions, claims);
+      return;
+    }
+    generated.push(...result.questions);
+  }
+
+  await completeMixedOrFail(job, selections, { ok: true, questions: generated }, redisQuestions, claims);
+}
+
+/** Finish a mixed (queue + generated) session or, on failure, return the queue questions. */
+async function completeMixedOrFail(
+  job: GenerationJob,
+  selections: QuizSelections,
+  result: GenerationResult,
+  redisQuestions: GenerationQuestion[],
+  claims: RedisClaim[],
+): Promise<void> {
+  const { sessionId } = job;
+  if (!result.ok) {
+    console.error(`[gen] session ${sessionId}: generation failed: ${result.error}`);
+    try {
+      await pushBackClaims(claims);
+      console.log(`[gen] session ${sessionId}: returned ${claims.length} queue questions after failure`);
+    } catch (pushErr) {
+      console.error(
+        `[gen] session ${sessionId}: failed to return queue questions: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}`,
+      );
+    }
+    await patchSession(sessionId, { status: ERROR, error: result.error, completedAt: new Date().toISOString() });
+    return;
+  }
+
+  const questions = shuffleCorrectPositions(enforcePerTechCount([...redisQuestions, ...result.questions], selections));
+  await appendToBank(result.questions, sessionId, selections);
+  console.log(`[gen] session ${sessionId}: complete (${questions.length} questions, ${redisQuestions.length} from Redis)`);
+  await patchSession(sessionId, {
+    status: COMPLETE,
+    questions,
+    generatedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    error: undefined,
+    hasRedisSourced: true,
+    redisClaims: claims,
+  });
 }
 
 /** 50/50 split generation: half via Zen (model knowledge), half via OpenRouter (web search). */

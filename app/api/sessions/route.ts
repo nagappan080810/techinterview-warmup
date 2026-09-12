@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const DIFFICULTIES: Difficulty[] = ["Easy", "Medium", "Hard", "Mixed"];
-const JOB_TITLES: JobTitle[] = ["Junior Developer", "Mid-level Developer", "Senior Developer", "Lead", "Architect"];
+const JOB_TITLES: JobTitle[] = ["Junior-Developer", "Mid-level-Developer", "Senior-Developer", "Lead", "Architect"];
 const TIMING_MODES: TimingMode[] = ["none", "per-tech", "global"];
 const REVEAL_MODES: RevealMode[] = ["immediate", "end"];
 
@@ -84,8 +84,17 @@ export async function POST(request: Request) {
 
   const session = await createSession(parsed.selections);
   console.log(`[api] POST /api/sessions: created session ${session.id}`);
-  await startGeneration(session.id, parsed.selections);
+  const result = await startGeneration(session.id, parsed.selections);
 
+  // Fully queue-served: the session is already complete — return it so the
+  // client can navigate to the quiz immediately without opening the stream API.
+  if (result.completed && result.session) {
+    console.log(`[api] POST /api/sessions: session ${session.id} served in full from Redis queue — returning complete`);
+    return NextResponse.json({ id: session.id, status: result.session.status, session: result.session });
+  }
+
+  // Partial/empty queue (or model generation): let the client watch progress
+  // via the stream API as usual.
   return NextResponse.json({ id: session.id, status: session.status });
 }
 

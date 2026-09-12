@@ -9,7 +9,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const { id } = await params;
   const session = await getSession(id);
   if (!session) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-  return NextResponse.json({ session, generating: isSessionGenerating(id) });
+  // redisClaims are server-internal (used to return unfinished assessments to
+  // the queue); never leak raw queue members to the browser.
+  const publicSession = { ...session };
+  delete publicSession.redisClaims;
+  return NextResponse.json({ session: publicSession, generating: isSessionGenerating(id) });
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -17,7 +21,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const session = await getSession(id);
   if (!session) return NextResponse.json({ error: "Session not found." }, { status: 404 });
 
-  let body: { questionIndex?: unknown; selectedIndexes?: unknown; resetAnswers?: unknown } | null = null;
+  let body: { questionIndex?: unknown; selectedIndexes?: unknown; resetAnswers?: unknown; assessmentCompleted?: unknown } | null = null;
   try {
     body = await request.json();
   } catch {
@@ -29,6 +33,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   if (body.resetAnswers === true) {
     const updated = await patchSession(id, { answers: {} });
+    return NextResponse.json({ ok: true, session: updated });
+  }
+
+  if (body.assessmentCompleted === true) {
+    const updated = await patchSession(id, { assessmentCompleted: true });
     return NextResponse.json({ ok: true, session: updated });
   }
 

@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/sessions";
-import { getEmbeddedClient, isSessionGenerating } from "@/lib/generator";
+import { isSessionGenerating } from "@/lib/generator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +30,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         answers: session.answers,
         chats: session.chats,
         error: session.error,
+        hasRedisSourced: session.hasRedisSourced,
       });
 
       // If already complete or error, close immediately
@@ -46,26 +47,39 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         return;
       }
 
-      // Subscribe to opencode events for live updates
-      try {
-        const client = await getEmbeddedClient();
-        let lastEventCount = session.eventCount;
+      // Poll the session store for updates. This works in every generator mode
+      // (embedded opencode or direct API) because progress lives in the session
+      // file — and forwards the terminal state the moment it settles.
+      let lastEventCount = session.eventCount;
 
-        const unsub = client?.global
-          .event({
-            onSseEvent: () => {
-              // Events are handled via polling the session file
-            },
-          })
-          .catch(() => {});
+      const pollInterval = setInterval(async () => {
+        try {
+          const { getSession: get } = await import("@/lib/sessions");
+          const fresh = await get(id);
+          if (!fresh) return;
 
-        // Poll session file for updates (more reliable than event filtering)
-        const pollInterval = setInterval(async () => {
-          try {
-            const { getSession: get } = await import("@/lib/sessions");
-            const fresh = await get(id);
-            if (!fresh) return;
-
+          if (fresh.status === "complete") {
+            clearInterval(pollInterval);
+            send("complete", {
+              status: "complete",
+              questions: fresh.questions,
+              selections: fresh.selections,
+              answers: fresh.answers,
+              chats: fresh.chats,
+              eventCount: fresh.eventCount,
+              hasRedisSourced: fresh.hasRedisSourced,
+            });
+            send("done", { status: "complete" });
+            controller.close();
+          } else if (fresh.status === "error") {
+            clearInterval(pollInterval);
+            send("error", {
+              status: "error",
+              error: fresh.error,
+            });
+            send("done", { status: "error" });
+            controller.close();
+          } else {
             const newEventCount = fresh.eventCount ?? 0;
             if (newEventCount > lastEventCount) {
               lastEventCount = newEventCount;
@@ -74,50 +88,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
                 lastEventAt: fresh.lastEventAt,
               });
             }
-
-            if (fresh.status === "complete") {
-              send("complete", {
-                status: "complete",
-                questions: fresh.questions,
-                selections: fresh.selections,
-                answers: fresh.answers,
-                chats: fresh.chats,
-                eventCount: fresh.eventCount,
-              });
-              send("done", { status: "complete" });
-              clearInterval(pollInterval);
-              unsub?.catch(() => {});
-              controller.close();
-            } else if (fresh.status === "error") {
-              send("error", {
-                status: "error",
-                error: fresh.error,
-              });
-              send("done", { status: "error" });
-              clearInterval(pollInterval);
-              unsub?.catch(() => {});
-              controller.close();
-            }
-          } catch {
-            // transient error, keep polling
           }
-        }, 500);
+        } catch {
+          // transient error, keep polling
+        }
+      }, 500);
 
-        // Handle client disconnect
-        request.signal.addEventListener("abort", () => {
-          clearInterval(pollInterval);
-          unsub?.catch(() => {});
-          try {
-            controller.close();
-          } catch {
-            // already closed
-          }
-        });
-      } catch {
-        send("error", { error: "Failed to connect to event stream." });
-        send("done", { status: "error" });
-        controller.close();
-      }
+      // Handle client disconnect
+      request.signal.addEventListener("abort", () => {
+        clearInterval(pollInterval);
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+      });
     },
   });
 

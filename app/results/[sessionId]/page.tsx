@@ -85,6 +85,9 @@ export default function ResultsPage() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-3">
+            <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+              ← Back to welcome
+            </Link>
             <h1 className="text-3xl font-semibold tracking-tight">Results</h1>
             <SessionBadge sessionId={sessionId} />
           </div>

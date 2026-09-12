@@ -1,6 +1,6 @@
 export type Difficulty = "Easy" | "Medium" | "Hard" | "Mixed";
 
-export type JobTitle = "Junior Developer" | "Mid-level Developer" | "Senior Developer" | "Lead" | "Architect";
+export type JobTitle = "Junior-Developer" | "Mid-level-Developer" | "Senior-Developer" | "Lead" | "Architect";
 
 export type RevealMode = "immediate" | "end";
 
@@ -52,7 +52,7 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export type SessionStatus = "queued" | "generating" | "complete" | "error";
+export type SessionStatus = "queued" | "generating" | "complete" | "error" | "expired";
 
 export interface QuizSession {
   id: string;
@@ -67,6 +67,24 @@ export interface QuizSession {
   questions?: GenerationQuestion[];
   answers: Record<number, QuestionAnswer>;
   chats?: Record<number, ChatMessage[]>;
+  /** True when any question in this session came from the Redis queue (client-visible). */
+  hasRedisSourced?: boolean;
+  /** True once the user finishes the quiz; set before navigating to results so abandons aren't misplaced. */
+  assessmentCompleted?: boolean;
+  /** Server-internal queue claims for unfinished assessments; never sent to the client. */
+  redisClaims?: RedisClaim[];
+}
+
+/**
+ * A claim on a question served from the Redis sorted-set queue (key
+ * `technology:difficulty:jobTitle`, score = epoch timestamp). `member` is the
+ * raw JSON string so the question can be returned to the queue (ZADD) losslessly
+ * when the assessment is abandoned before it's finished.
+ */
+export interface RedisClaim {
+  key: string;
+  member: string;
+  score: number;
 }
 
 export interface QuestionStoreEntry {

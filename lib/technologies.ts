@@ -149,9 +149,9 @@ export function getTechnology(id: string): Technology | undefined {
 export const DIFFICULTIES: Difficulty[] = ["Easy", "Medium", "Hard", "Mixed"];
 
 export const JOB_TITLES: JobTitle[] = [
-  "Junior Developer",
-  "Mid-level Developer",
-  "Senior Developer",
+  "Junior-Developer",
+  "Mid-level-Developer",
+  "Senior-Developer",
   "Lead",
   "Architect",
 ];

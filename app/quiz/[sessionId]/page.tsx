@@ -593,9 +593,11 @@ export default function QuizPage() {
           {question.options.map((opt, i) => {
             const chosen = selected.includes(i);
             const correctOpt = question.correctIndexes.includes(i);
+            const missed = revealed && correctOpt && !chosen;
             let stateClass = "border-zinc-200 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600";
             if (revealed) {
-              if (correctOpt) stateClass = "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40";
+              if (correctOpt && chosen) stateClass = "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40";
+              else if (missed) stateClass = "border-dashed border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-950/30";
               else if (chosen) stateClass = "border-red-500 bg-red-50 dark:bg-red-950/40";
             } else if (chosen) {
               stateClass = "border-amber-500 bg-amber-200 dark:border-amber-400 dark:bg-amber-900/60";
@@ -618,7 +620,8 @@ export default function QuizPage() {
                   {OPTION_LABELS[i]}
                 </span>
                 <span className="min-w-0 flex-1"><QuestionText>{opt}</QuestionText></span>
-                {revealed && correctOpt && <span className="text-emerald-600 dark:text-emerald-400">✓</span>}
+                {revealed && correctOpt && chosen && <span className="text-emerald-600 dark:text-emerald-400">✓</span>}
+                {revealed && missed && <span className="text-amber-600 dark:text-amber-400">⊘ missed</span>}
                 {revealed && chosen && !correctOpt && <span className="text-red-600 dark:text-red-400">✗</span>}
               </button>
             );
@@ -631,6 +634,11 @@ export default function QuizPage() {
               {answerIsCorrect ? "✅ Correct." : "❌ Incorrect."} Correct answer{question.correctIndexes.length > 1 ? "s" : ""}:{" "}
               {question.correctIndexes.map((c) => `${OPTION_LABELS[c]}) ${question.options[c]}`).join("  ·  ")}
             </p>
+            {!answerIsCorrect && question.isMultiSelect && (
+              <p className="mb-1 text-amber-700 dark:text-amber-400">
+                You missed: {question.correctIndexes.filter((c) => !selected.includes(c)).map((c) => `${OPTION_LABELS[c]}) ${question.options[c]}`).join("  ·  ")}
+              </p>
+            )}
             <QuestionText className="text-zinc-600 dark:text-zinc-400">{question.explanation}</QuestionText>
           </div>
         )}

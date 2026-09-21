@@ -789,16 +789,27 @@ function parseQuestions(text: string): { ok: true; questions: GenerationQuestion
   for (let i = 0; i < parsed.length; i++) {
     const raw = parsed[i] as Partial<GenerationQuestion>;
     const source = raw.source === "model" || raw.source === "official-docs" || raw.source === "interview" ? raw.source : undefined;
+    const correctIndexes = Array.isArray(raw.correctIndexes)
+      ? [...new Set(raw.correctIndexes.map((n) => Number(n)))].sort((a, b) => a - b)
+      : [];
     const q: GenerationQuestion = {
       technology: String(raw.technology ?? ""),
       area: String(raw.area ?? ""),
       question: String(raw.question ?? ""),
       isMultiSelect: Boolean(raw.isMultiSelect),
       options: Array.isArray(raw.options) && raw.options.length === 4 ? raw.options.map((o) => String(o)) : [],
-      correctIndexes: Array.isArray(raw.correctIndexes) ? raw.correctIndexes.map((n) => Number(n)) : [],
+      correctIndexes,
       explanation: String(raw.explanation ?? ""),
       source,
     };
+    // The interaction model keys on `isMultiSelect` while scoring keys on
+    // `correctIndexes.length` — force them to agree so a question is never
+    // rendered as single-select yet scored against 2+ answers (or vice versa).
+    if (q.correctIndexes.length > 1) {
+      q.isMultiSelect = true;
+    } else if (q.correctIndexes.length === 1) {
+      q.isMultiSelect = false;
+    }
     const valid =
       q.question.length > 0 &&
       q.options.length === 4 &&

@@ -148,6 +148,25 @@ export default function ResultsPage() {
                 <td className="px-4 py-3">
                   {!r.answered ? (
                     <span className="text-zinc-400">—</span>
+                  ) : r.q.isMultiSelect ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {r.q.options.map((_, o) => {
+                        const picked = r.selected.includes(o);
+                        const correct = r.q.correctIndexes.includes(o);
+                        if (!picked && !correct) return null;
+                        const classes =
+                          picked && correct
+                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                            : !picked && correct
+                              ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+                        return (
+                          <span key={o} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${classes}`}>
+                            {OPTION_LABELS[o]} {picked && correct ? "✓" : picked ? "✗" : "⊘ missed"}
+                          </span>
+                        );
+                      })}
+                    </div>
                   ) : (
                     <span>{r.selected.map((o) => OPTION_LABELS[o]).join(", ") || "—"}</span>
                   )}

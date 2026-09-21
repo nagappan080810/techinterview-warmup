@@ -145,10 +145,6 @@ function parseRedisMember(member: unknown): RawMember | null {
   }
 }
 
-function coerceIsMultiSelect(value: unknown): boolean {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-
 function coerceSource(value: unknown): QuestionSource | undefined {
   return value === "model" || value === "official-docs" || value === "interview" ? value : undefined;
 }
@@ -177,13 +173,16 @@ function toGenerationQuestion(raw: RawMember, technology: string): GenerationQue
 
   if (resolvedCorrect.length < 1) return null;
 
+  const resolved = [...new Set(resolvedCorrect)].sort((a, b) => a - b);
+  const isMultiSelect = resolved.length > 1;
+
   return {
     technology,
     area: String(raw.area ?? ""),
     question,
-    isMultiSelect: coerceIsMultiSelect(raw.isMultiSelect),
+    isMultiSelect,
     options,
-    correctIndexes: resolvedCorrect,
+    correctIndexes: resolved,
     explanation: String(raw.explanation ?? ""),
     source: coerceSource(raw.source),
   };
@@ -202,6 +201,26 @@ function deriveCorrectIndexes(answer: unknown, options: string[]): number[] {
   if (!answerText || options.length !== 4) return [];
 
   const normOptions = options.map((o) => normalizeText(o.replace(/^[A-Da-d]\s*[:\-]\s*/, "")));
+
+  const singleLetter = answerText.match(/^\(?([a-d])\)?\.?$/);
+  if (singleLetter) return [singleLetter[1].charCodeAt(0) - "a".charCodeAt(0)];
+
+  // Letter-list answers ("A, B", "A and C", "(B) and (D)", "a;c") only qualify
+  // when the text actually reads like a list — require a separator.
+  const parts = answerText.split(/\s*[,;&]\s*|\s+and\s+/).map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length >= 2) {
+    const multi = new Set<number>();
+    for (const part of parts) {
+      const letter = part.replace(/[()]/g, "").match(/^([a-d])\.?$/);
+      if (letter) {
+        multi.add(letter[1].charCodeAt(0) - "a".charCodeAt(0));
+      } else {
+        const match = deriveCorrectIndexes(part, options);
+        if (match.length === 1) multi.add(match[0]);
+      }
+    }
+    if (multi.size >= 2) return [...multi].sort((a, b) => a - b);
+  }
 
   for (let i = 0; i < normOptions.length; i++) {
     if (normOptions[i] === answerText) return [i];

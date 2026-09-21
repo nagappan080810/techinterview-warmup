@@ -49,7 +49,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
       // Poll the session store for updates. This works in every generator mode
       // (embedded opencode or direct API) because progress lives in the session
-      // file — and forwards the terminal state the moment it settles.
+      // store — and forwards the terminal state the moment it settles.
       let lastEventCount = session.eventCount;
 
       const pollInterval = setInterval(async () => {

@@ -16,16 +16,16 @@ export async function createSession(selections: QuizSelections): Promise<QuizSes
     answers: {},
     chats: {},
   };
-  setSessionInStore(session);
+  await setSessionInStore(session, { create: true });
   return session;
 }
 
 export async function getSession(id: string): Promise<QuizSession | null> {
-  return getSessionFromStore(id) ?? null;
+  return (await getSessionFromStore(id)) ?? null;
 }
 
 export async function writeSession(session: QuizSession): Promise<void> {
-  setSessionInStore(session);
+  await setSessionInStore(session);
 }
 
 export async function patchSession(
@@ -35,7 +35,7 @@ export async function patchSession(
   const session = await getSession(id);
   if (!session) return null;
   const updated = { ...session, ...patch, answers: patch.answers ?? session.answers };
-  setSessionInStore(updated);
+  await setSessionInStore(updated);
   return updated;
 }
 
@@ -44,7 +44,7 @@ export async function listSessions(): Promise<QuizSession[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  deleteSessionFromStore(id);
+  await deleteSessionFromStore(id);
 }
 
 function generateId(): string {

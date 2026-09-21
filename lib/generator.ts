@@ -79,7 +79,7 @@ export function isSessionGenerating(sessionId: string): boolean {
   return activeJobs.has(sessionId);
 }
 
-/** Kick off background generation for a session. Returns immediately; progress is written to the session file. */
+/** Kick off background generation for a session. Returns immediately; progress is written to the session store. */
 export type StartGenerationResult =
   | { completed: true; session: QuizSession | null }
   | { completed: false };
@@ -547,8 +547,9 @@ async function spawnOpenCode(job: GenerationJob, prompt: string): Promise<Genera
   const { sessionId } = job;
   let eventCount = 0;
 
-  // Keep the session file fresh so any polling client (and the server on restart)
-  // can see live progress. Throttled to at most once per 500ms to avoid write spam.
+  // Keep the session store fresh so any polling client (and the server on
+  // restart, via the Redis mirror) can see live progress. Throttled to at most
+  // once per 500ms to avoid write spam.
   let lastTouch = 0;
   function touchEvent() {
     const now = Date.now();

@@ -37,6 +37,10 @@ export default function QuizPage() {
   const restoreBeaconSentRef = useRef(false);
   const hasRedisSourcedRef = useRef(false);
   const mountedRef = useRef(true);
+  const timeUpHandled = useRef(false);
+  // Guards the auto-resume decision and the all-answered redirect so each runs once.
+  const landedRef = useRef(false);
+  const resumeFinishRef = useRef(false);
 
   // Displayed thread = persisted messages for the current question + the
   // in-flight (optimistic) message while the assistant is replying.
@@ -51,6 +55,69 @@ export default function QuizPage() {
   const immediate = session?.selections.revealMode === "immediate";
   const timingMode = session?.selections.timingMode;
   const timeoutMinutes = session?.selections.timeoutMinutes;
+
+  // Shared state setup for entering the question stage — used by a fresh start
+  // (question 0) and by a resume (first unanswered question). Restarts the
+  // countdown in full from the landing point; existing answers are preserved.
+  const enterQuestionStage = useCallback(
+    (startIndex: number) => {
+      timeUpHandled.current = false;
+      setNow(Date.now());
+      setQuizStart(Date.now());
+      setSectionStart(Date.now());
+      setIndex(startIndex);
+      setSelected([]);
+      setRevealed(false);
+      setChatOpen(false);
+      setChatInput("");
+      setOptimistic(null);
+      setStage("question");
+    },
+    [],
+  );
+
+  // Decide where a complete quiz lands, called once when the session loads.
+  // Fresh runs land on the intro; in-progress runs jump straight to the first
+  // unanswered question (answers preserved, timer restarted); fully-answered
+  // runs are treated as finished and redirect to results.
+  const land = useCallback(
+    (s: QuizSession) => {
+      if (s.status !== "complete") return;
+      if (landedRef.current) return;
+      landedRef.current = true;
+
+      const qs = s.questions ?? [];
+      const answers = s.answers ?? {};
+      const answeredCount = qs.reduce((n, _q, i) => (answers[i] ? n + 1 : n), 0);
+      if (answeredCount === 0) {
+        setStage((prev) => (prev === "loading" ? "intro" : prev));
+        return;
+      }
+
+      let resume = 0;
+      while (resume < qs.length && answers[resume]) resume += 1;
+
+      if (qs.length > 0 && resume >= qs.length) {
+        // Every question answered — finish and let the results page load.
+        if (!resumeFinishRef.current) {
+          resumeFinishRef.current = true;
+          finishedRef.current = true;
+          void fetch(`/api/sessions/${sessionId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ assessmentCompleted: true }),
+          }).catch(() => {
+            // non-fatal
+          });
+          router.push(`/results/${sessionId}`);
+        }
+        return;
+      }
+
+      enterQuestionStage(resume);
+    },
+    [enterQuestionStage, router, sessionId],
+  );
 
   // Stream generation progress via SSE instead of polling.
   useEffect(() => {
@@ -92,7 +159,17 @@ export default function QuizPage() {
           };
         });
         if (data.status === "complete") {
-          setStage((prev) => (prev === "loading" ? "intro" : prev));
+          land({
+            id: sessionId,
+            selections:
+              data.selections ??
+              { technologies: [], difficulty: "Medium", jobTitle: "Senior-Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+            status: "complete",
+            createdAt: new Date().toISOString(),
+            eventCount: data.eventCount ?? 0,
+            questions: data.questions,
+            answers: data.answers ?? {},
+          });
         } else if (data.status === "error") {
           setError(data.error ?? "Generation failed.");
         }
@@ -137,7 +214,17 @@ export default function QuizPage() {
             hasRedisSourced: data.hasRedisSourced ?? base.hasRedisSourced,
           };
         });
-        setStage((prev) => (prev === "loading" ? "intro" : prev));
+        land({
+          id: sessionId,
+          selections:
+            data.selections ??
+            { technologies: [], difficulty: "Medium", jobTitle: "Senior-Developer", questionsPerTech: 1, timingMode: "none", timeoutMinutes: 4, revealMode: "end" },
+          status: "complete",
+          createdAt: new Date().toISOString(),
+          eventCount: data.eventCount,
+          questions: data.questions,
+          answers: data.answers ?? {},
+        });
       });
 
       eventSource.addEventListener("error", (e: MessageEvent) => {
@@ -175,7 +262,7 @@ export default function QuizPage() {
             }
             setSession(s);
             if (s.status === "complete") {
-              setStage((prev) => (prev === "loading" ? "intro" : prev));
+              land(s);
             } else if (s.status === "error") {
               setError(s.error ?? "Generation failed.");
             } else if (reconnectAttempts >= MAX_RECONNECTS) {
@@ -217,7 +304,7 @@ export default function QuizPage() {
         }
         setSession(s);
         if (s.status === "complete") {
-          setStage((prev) => (prev === "loading" ? "intro" : prev));
+          land(s);
         } else if (s.status === "error") {
           setError(s.error ?? "Generation failed.");
         } else {
@@ -234,13 +321,15 @@ export default function QuizPage() {
       eventSource?.close();
       eventSource = null;
     };
-  }, [sessionId]);
+  }, [sessionId, land]);
 
-  // If the assessment is abandoned before finishing (tab closed, refresh, SPA
-  // navigation away, or the "← New set" button), hand the Redis-sourced
-  // questions straight back to the queue and delete the in-memory session.
+  // If the assessment is explicitly abandoned (the "← New set"/"← Back to
+  // welcome" buttons or an SPA navigation away from the quiz page), hand the
+  // Redis-sourced questions straight back to the queue and delete the session.
   // Finished quizzes are exempt (finishedRef flips first); a single-fire guard
   // prevents double-sends when several triggers fire on the same leave.
+  // Refreshes and tab closes intentionally do NOT restore — the session and its
+  // answers stay put so the quiz can be resumed where it left off.
   const fireRestore = useCallback(
     (reason: string) => {
       if (finishedRef.current) return;
@@ -263,18 +352,16 @@ export default function QuizPage() {
     hasRedisSourcedRef.current = session?.hasRedisSourced === true;
   }, [session?.hasRedisSourced]);
 
-  // Real page unloads: tab close, refresh, navigating to an external URL.
-  useEffect(() => {
-    const onPageHide = () => fireRestore("pagehide");
-    window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
-  }, [fireRestore]);
-
-  // Component unmount: covers SPA navigation away from the quiz page, which
-  // never fires pagehide. The one-tick delay lets React StrictMode's dev-only
+  // Component unmount: a deliberate navigation away from the quiz page (e.g.
+  // "← New set" → welcome, which also fires fireRestore explicitly, or any SPA
+  // route change to something other than results) returns the Redis-sourced
+  // questions to the queue. The one-tick delay lets React StrictMode's dev-only
   // mount → unmount → remount cycle settle, and the pathname check skips dev
   // hot-reloads (mount/unmount with the URL unchanged), so only a real unmount
   // onto a different route (mountedRef stays false, pathname changes) restores.
+  // Finished quizzes are exempt via finishedRef. Real page unloads (refresh,
+  // tab close) deliberately do NOT restore — the session survives so the quiz
+  // can be resumed at the next unanswered question.
   useEffect(() => {
     mountedRef.current = true;
     const quizPath = `/quiz/${sessionId}`;
@@ -305,7 +392,6 @@ export default function QuizPage() {
   }, [timerActive, now, quizStart, sectionStart, timingMode, timeoutMinutes]);
 
   // Hard stop at the deadline (rapid-round style).
-  const timeUpHandled = useRef(false);
   useEffect(() => {
     if (timerActive && remainingMs <= 0 && !timeUpHandled.current) {
       timeUpHandled.current = true;
@@ -330,17 +416,7 @@ export default function QuizPage() {
   }, [timerActive, remainingMs, revealed, selected, index, sessionId, router]);
 
   const startQuiz = async () => {
-    timeUpHandled.current = false;
-    setNow(Date.now());
-    setQuizStart(Date.now());
-    setSectionStart(Date.now());
-    setIndex(0);
-    setSelected([]);
-    setRevealed(false);
-    setChatOpen(false);
-    setChatInput("");
-    setOptimistic(null);
-    setStage("question");
+    enterQuestionStage(0);
     if (session && Object.keys(session.answers).length > 0) {
       try {
         await fetch(`/api/sessions/${sessionId}`, {

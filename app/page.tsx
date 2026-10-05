@@ -90,14 +90,14 @@ export default function WelcomePage() {
                     key={tech.id}
                     className={`rounded-2xl border p-4 transition-colors ${
                       selected
-                        ? "border-zinc-800 bg-zinc-100 dark:border-zinc-200 dark:bg-zinc-800"
-                        : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+                        ? "border-zinc-800 bg-zinc-100 hover:border-zinc-700 dark:border-zinc-200 dark:bg-zinc-800 dark:hover:border-zinc-300"
+                        : "border-zinc-200 hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
                     }`}
                   >
                     <button
                       type="button"
                       onClick={() => toggleTechnology(tech.id)}
-                      className="flex w-full items-start gap-3 text-left"
+                      className="flex w-full cursor-pointer items-start gap-3 rounded-xl text-left outline-none transition-transform duration-150 active:scale-[0.99] focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2"
                     >
                       <span className={`mt-0.5 text-xl ${selected ? "" : "opacity-40 grayscale"}`}>{tech.icon}</span>
                       <span className="min-w-0 flex-1">
@@ -115,7 +115,7 @@ export default function WelcomePage() {
                     <button
                       type="button"
                       onClick={() => setExpanded(open ? null : tech.id)}
-                      className="mt-2 text-xs font-medium text-zinc-400 underline-offset-2 hover:text-zinc-700 hover:underline dark:hover:text-zinc-200"
+                      className="btn btn-xs btn-ghost -ml-2 mt-2"
                     >
                       {open ? "Hide areas" : "Show areas covered"}
                     </button>
@@ -143,10 +143,10 @@ export default function WelcomePage() {
               {DIFFICULTIES.map((d) => (
                 <label
                   key={d}
-                  className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
+                  className={`chip px-4 py-2 text-sm font-medium ${
                     difficulty === d
                       ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
-                      : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
+                      : "border-zinc-300 dark:border-zinc-700"
                   }`}
                 >
                   <input type="radio" name="difficulty" value={d} checked={difficulty === d} onChange={() => setDifficulty(d)} className="sr-only" />
@@ -162,10 +162,10 @@ export default function WelcomePage() {
               {JOB_TITLES.map((j) => (
                 <label
                   key={j}
-                  className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
+                  className={`chip px-4 py-2 text-sm font-medium ${
                     jobTitle === j
                       ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
-                      : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
+                      : "border-zinc-300 dark:border-zinc-700"
                   }`}
                 >
                   <input type="radio" name="jobTitle" value={j} checked={jobTitle === j} onChange={() => setJobTitle(j)} className="sr-only" />
@@ -204,10 +204,10 @@ export default function WelcomePage() {
                   ).map(([mode, label]) => (
                     <label
                       key={mode}
-                      className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      className={`chip px-3 py-1.5 text-xs font-medium ${
                         timingMode === mode
                           ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
-                          : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
+                          : "border-zinc-300 dark:border-zinc-700"
                       }`}
                     >
                       <input type="radio" name="timing" value={mode} checked={timingMode === mode} onChange={() => setTimingMode(mode)} className="sr-only" />
@@ -245,10 +245,10 @@ export default function WelcomePage() {
               ).map(([mode, label]) => (
                 <label
                   key={mode}
-                  className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
+                  className={`chip px-4 py-2 text-sm font-medium ${
                     revealMode === mode
                       ? "border-zinc-800 bg-zinc-800 text-white dark:border-zinc-200 dark:bg-zinc-200 dark:text-zinc-900"
-                      : "border-zinc-300 hover:border-zinc-500 dark:border-zinc-700 dark:hover:border-zinc-500"
+                      : "border-zinc-300 dark:border-zinc-700"
                   }`}
                 >
                   <input type="radio" name="reveal" value={mode} checked={revealMode === mode} onChange={() => setRevealMode(mode)} className="sr-only" />
@@ -284,7 +284,7 @@ export default function WelcomePage() {
           <button
             type="submit"
             disabled={technologies.length === 0}
-            className="w-full rounded-full bg-zinc-900 px-6 py-3 font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+            className="btn btn-md btn-primary w-full"
           >
             Generate {totalQuestions} questions →
           </button>

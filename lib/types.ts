@@ -1,6 +1,6 @@
 export type Difficulty = "Easy" | "Medium" | "Hard" | "Mixed";
 
-export type JobTitle = "Junior-Developer" | "Mid-level-Developer" | "Senior-Developer" | "Lead" | "Architect";
+export type JobTitle = "Junior-Developer" | "Mid-level-Developer" | "Senior-Developer" | "Lead" | "Lead-Developer" | "Architect";
 
 export type RevealMode = "immediate" | "end";
 
@@ -44,6 +44,12 @@ export interface QuestionAnswer {
   selectedIndexes: number[];
   isCorrect: boolean;
   answeredAt?: string;
+  /**
+   * Milliseconds the candidate spent on the question before committing the
+   * answer, measured client-side. Stamped once at commit time so reading the
+   * explanation (immediate-reveal mode) is not billed to the question.
+   */
+  durationMs?: number;
 }
 
 export interface ChatMessage {
@@ -71,6 +77,18 @@ export interface QuizSession {
   hasRedisSourced?: boolean;
   /** True once the user finishes the quiz; set before navigating to results so abandons aren't misplaced. */
   assessmentCompleted?: boolean;
+  /**
+   * Which attempt at this question set the stored answers, chats and timings
+   * belong to (1 = the first, implied when absent). "Retry same set" wipes the
+   * previous attempt and bumps this, which is how the quiz page knows an empty
+   * session is a retake to jump straight into rather than a fresh set to intro.
+   */
+  attempt?: number;
+  /**
+   * When the candidate first entered the question stage. Stamped once (a resume
+   * does not reset it) so the results page can report total time taken.
+   */
+  quizStartedAt?: string;
   /** Server-internal queue claims for unfinished assessments; never sent to the client. */
   redisClaims?: RedisClaim[];
 }

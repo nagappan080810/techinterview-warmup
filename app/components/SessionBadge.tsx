@@ -20,7 +20,7 @@ export default function SessionBadge({ sessionId }: { sessionId: string }) {
       type="button"
       onClick={() => void copy()}
       title="Click to copy session id"
-      className="group inline-flex items-center gap-2 rounded-full bg-zinc-900 px-3 py-1 font-mono text-xs text-zinc-100 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+      className="btn btn-xs btn-primary group gap-2 font-mono text-zinc-100 dark:text-zinc-900"
     >
       <span className="uppercase tracking-wide text-[10px] text-zinc-400 dark:text-zinc-500">session</span>
       <span className="font-semibold">{sessionId}</span>

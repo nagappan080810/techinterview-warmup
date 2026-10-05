@@ -38,6 +38,12 @@ export default function QuizPage() {
   const hasRedisSourcedRef = useRef(false);
   const mountedRef = useRef(true);
   const timeUpHandled = useRef(false);
+  // When the current question was shown — drives the reported time-on-question.
+  // Initialized to 0 because `enterQuestionStage` always runs before the
+  // question stage is reachable (React Compiler forbids Date.now() in render).
+  const questionStartRef = useRef<number>(0);
+  // Time-on-question for the current question, latched at answer-commit time.
+  const committedDurationRef = useRef<number | null>(null);
   // Guards the auto-resume decision and the all-answered redirect so each runs once.
   const landedRef = useRef(false);
   const resumeFinishRef = useRef(false);
@@ -62,9 +68,12 @@ export default function QuizPage() {
   const enterQuestionStage = useCallback(
     (startIndex: number) => {
       timeUpHandled.current = false;
-      setNow(Date.now());
-      setQuizStart(Date.now());
-      setSectionStart(Date.now());
+      const start = Date.now();
+      setNow(start);
+      setQuizStart(start);
+      setSectionStart(start);
+      questionStartRef.current = start;
+      committedDurationRef.current = null;
       setIndex(startIndex);
       setSelected([]);
       setRevealed(false);
@@ -77,9 +86,11 @@ export default function QuizPage() {
   );
 
   // Decide where a complete quiz lands, called once when the session loads.
-  // Fresh runs land on the intro; in-progress runs jump straight to the first
-  // unanswered question (answers preserved, timer restarted); fully-answered
-  // runs are treated as finished and redirect to results.
+  // Fresh runs land on the intro; retakes (the previous attempt was cleared by
+  // "Retry same set") jump straight into question 1; in-progress runs jump
+  // straight to the first unanswered question (answers preserved, timer
+  // restarted); fully-answered runs are treated as finished and redirect to
+  // results.
   const land = useCallback(
     (s: QuizSession) => {
       if (s.status !== "complete") return;
@@ -90,6 +101,11 @@ export default function QuizPage() {
       const answers = s.answers ?? {};
       const answeredCount = qs.reduce((n, _q, i) => (answers[i] ? n + 1 : n), 0);
       if (answeredCount === 0) {
+        if ((s.attempt ?? 1) > 1) {
+          // Retake: the server already cleared attempt N-1, so start the new one.
+          enterQuestionStage(0);
+          return;
+        }
         setStage((prev) => (prev === "loading" ? "intro" : prev));
         return;
       }
@@ -136,6 +152,7 @@ export default function QuizPage() {
           chats?: QuizSession["chats"];
           error?: string;
           hasRedisSourced?: boolean;
+          attempt?: number;
         };
         setSession((prev) => {
           const base: QuizSession = prev ?? {
@@ -156,6 +173,7 @@ export default function QuizPage() {
             chats: data.chats ?? base.chats,
             error: data.error ?? base.error,
             hasRedisSourced: data.hasRedisSourced ?? base.hasRedisSourced,
+            attempt: data.attempt ?? base.attempt,
           };
         });
         if (data.status === "complete") {
@@ -169,6 +187,7 @@ export default function QuizPage() {
             eventCount: data.eventCount ?? 0,
             questions: data.questions,
             answers: data.answers ?? {},
+            attempt: data.attempt,
           });
         } else if (data.status === "error") {
           setError(data.error ?? "Generation failed.");
@@ -192,6 +211,7 @@ export default function QuizPage() {
           chats?: QuizSession["chats"];
           eventCount: number;
           hasRedisSourced?: boolean;
+          attempt?: number;
         };
         setSession((prev) => {
           const base: QuizSession = prev ?? {
@@ -212,6 +232,7 @@ export default function QuizPage() {
             eventCount: data.eventCount,
             completedAt: new Date().toISOString(),
             hasRedisSourced: data.hasRedisSourced ?? base.hasRedisSourced,
+            attempt: data.attempt ?? base.attempt,
           };
         });
         land({
@@ -224,6 +245,7 @@ export default function QuizPage() {
           eventCount: data.eventCount,
           questions: data.questions,
           answers: data.answers ?? {},
+          attempt: data.attempt,
         });
       });
 
@@ -384,6 +406,31 @@ export default function QuizPage() {
     return () => clearInterval(id);
   }, [timerActive]);
 
+  // Stamp the attempt's start time once, on first entry to the question stage, so
+  // the results page can report total time taken. A resume re-runs this effect,
+  // but the server keeps the first stamp rather than rewinding the clock.
+  useEffect(() => {
+    if (stage !== "question" || !sessionId || session?.quizStartedAt) return;
+    void fetch(`/api/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quizStartedAt: new Date().toISOString() }),
+    }).catch(() => {
+      // non-fatal — results just won't show total time
+    });
+  }, [stage, sessionId, session?.quizStartedAt]);
+
+  // Time spent on the current question, latched the first time an answer is
+  // committed. In immediate-reveal mode the explanation is read between commit
+  // and Next, so re-stamping on Next would bill that reading time to the
+  // question.
+  const commitDuration = useCallback((): number => {
+    if (committedDurationRef.current === null) {
+      committedDurationRef.current = Math.max(0, Date.now() - questionStartRef.current);
+    }
+    return committedDurationRef.current;
+  }, []);
+
   const remainingMs = useMemo(() => {
     if (!timerActive || quizStart === null) return Infinity;
     const mins = timeoutMinutes ?? 0;
@@ -395,6 +442,7 @@ export default function QuizPage() {
   useEffect(() => {
     if (timerActive && remainingMs <= 0 && !timeUpHandled.current) {
       timeUpHandled.current = true;
+      finishedRef.current = true; // so it is not returned to the queue on unload
       if (revealed) {
         router.push(`/results/${sessionId}`);
       } else {
@@ -404,7 +452,11 @@ export default function QuizPage() {
             await fetch(`/api/sessions/${sessionId}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ questionIndex: index, selectedIndexes: selectedCopy }),
+              body: JSON.stringify({
+                questionIndex: index,
+                selectedIndexes: selectedCopy,
+                durationMs: commitDuration(),
+              }),
             });
           } catch {
             // non-fatal
@@ -413,7 +465,7 @@ export default function QuizPage() {
         })();
       }
     }
-  }, [timerActive, remainingMs, revealed, selected, index, sessionId, router]);
+  }, [timerActive, remainingMs, revealed, selected, index, sessionId, router, commitDuration]);
 
   const startQuiz = async () => {
     enterQuestionStage(0);
@@ -447,7 +499,7 @@ export default function QuizPage() {
       await fetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionIndex: index, selectedIndexes: selected }),
+        body: JSON.stringify({ questionIndex: index, selectedIndexes: selected, durationMs: commitDuration() }),
       });
     } catch {
       // non-fatal
@@ -514,6 +566,7 @@ export default function QuizPage() {
 
   const next = async () => {
     const onLastQuestion = index + 1 === total;
+    const durationMs = commitDuration();
     try {
       await fetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
@@ -521,6 +574,7 @@ export default function QuizPage() {
         body: JSON.stringify({
           questionIndex: index,
           selectedIndexes: selected,
+          durationMs,
           // The final question marks the assessment complete, so an unload
           // must not return these questions to the queue.
           assessmentCompleted: onLastQuestion,
@@ -534,6 +588,8 @@ export default function QuizPage() {
       if (timingMode === "per-tech" && questions[nextIndex]?.technology !== question?.technology) {
         setSectionStart(Date.now());
       }
+      questionStartRef.current = Date.now();
+      committedDurationRef.current = null;
       setSelected([]);
       setRevealed(false);
       setChatOpen(false);

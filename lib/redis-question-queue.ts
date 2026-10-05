@@ -24,6 +24,9 @@ export function redisQueueEnabled(): boolean {
 
 /** The sorted-set key for a technology/difficulty/jobTitle combination. */
 export function queueKeyFor(selections: Pick<QuizSelections, "difficulty" | "jobTitle">, technology: string): string {
+  if (selections.jobTitle === "Lead" ) {
+    selections.jobTitle = "Lead-Developer";
+  }
   return `${technology}:${selections.difficulty}:${selections.jobTitle}`;
 }
 

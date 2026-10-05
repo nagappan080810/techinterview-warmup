@@ -31,6 +31,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         chats: session.chats,
         error: session.error,
         hasRedisSourced: session.hasRedisSourced,
+        attempt: session.attempt,
       });
 
       // If already complete or error, close immediately
@@ -68,6 +69,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
               chats: fresh.chats,
               eventCount: fresh.eventCount,
               hasRedisSourced: fresh.hasRedisSourced,
+              attempt: fresh.attempt,
             });
             send("done", { status: "complete" });
             controller.close();

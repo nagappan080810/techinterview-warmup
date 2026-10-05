@@ -90,7 +90,10 @@ export async function POST(request: Request) {
   // client can navigate to the quiz immediately without opening the stream API.
   if (result.completed && result.session) {
     console.log(`[api] POST /api/sessions: session ${session.id} served in full from Redis queue — returning complete`);
-    return NextResponse.json({ id: session.id, status: result.session.status, session: result.session });
+    // redisClaims are server-internal; never leak raw queue members to the browser.
+    const publicSession = { ...result.session };
+    delete publicSession.redisClaims;
+    return NextResponse.json({ id: session.id, status: result.session.status, session: publicSession });
   }
 
   // Partial/empty queue (or model generation): let the client watch progress
